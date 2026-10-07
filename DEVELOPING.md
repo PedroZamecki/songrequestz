@@ -17,6 +17,19 @@ cargo build --release
 ./target/release/songrequestz
 ```
 
+## Test without Streamer.bot: the mock
+
+```
+uv run dev/sbmock.py                    # ws://127.0.0.1:8081/, no password
+uv run dev/sbmock.py --password secret  # authentication on
+```
+
+Set `streamerbot_url` in `target/release/songrequestz.json` to `ws://127.0.0.1:8081/` (and the
+password). Type chat lines into the mock: `!song` (viewer Ana), `Bob: !ssr never gonna`,
+`Mia(mod+sub): !skip`. It prints every reply (`SendMessage`) and action (`DoAction`) it gets. Like the
+real one, `SendMessage` needs authentication on. The real Streamer.bot (`ws://127.0.0.1:8080/`) works
+the same way.
+
 ## Checks (same as the hooks and CI)
 
 ```
