@@ -28,8 +28,10 @@ jobs:
       - id: next
         shell: bash
         run: |
-          last=$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)
-          log=$(git log "$last..HEAD" --format=%s)
+          # No tag yet: the whole history counts, from v0.0.0.
+          last=$(git describe --tags --abbrev=0 2>/dev/null || true)
+          log=$(git log ${last:+"$last.."}HEAD --format=%s)
+          last=${last:-v0.0.0}
           IFS=. read -r major minor patch <<< "${last#v}"
           if grep -qE '^[a-z]+(\([^)]*\))?!:' <<< "$log"; then major=$((major + 1)) minor=0 patch=0
           elif grep -qE '^feat(\([^)]*\))?:' <<< "$log"; then minor=$((minor + 1)) patch=0
