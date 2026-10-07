@@ -1,0 +1,13 @@
+[package]
+name = "songrequestz"
+version = "0.0.0" # unused: releases are versioned by git tags (see build workflow)
+edition = "2021"
+
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

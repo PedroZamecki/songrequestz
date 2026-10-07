@@ -1,0 +1,65 @@
+# Pull requests: build songrequestz.exe as a check.
+# Merges to main: pick the next version from the commits since the last tag
+# (breaking "type!:" -> major, feat -> minor, fix/perf -> patch), build and publish the release.
+# Merges with only chore/ci/docs/... commits don't release.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency: build-${{ github.ref }}
+
+jobs:
+  version:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.next.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: next
+        shell: bash
+        run: |
+          last=$(git describe --tags --abbrev=0 2>/dev/null || echo v0.0.0)
+          log=$(git log "$last..HEAD" --format=%s)
+          IFS=. read -r major minor patch <<< "${last#v}"
+          if grep -qE '^[a-z]+(\([^)]*\))?!:' <<< "$log"; then major=$((major + 1)) minor=0 patch=0
+          elif grep -qE '^feat(\([^)]*\))?:' <<< "$log"; then minor=$((minor + 1)) patch=0
+          elif grep -qE '^(fix|perf)(\([^)]*\))?:' <<< "$log"; then patch=$((patch + 1))
+          else echo "no feat/fix since $last: no release"; exit 0
+          fi
+          echo "next release: v$major.$minor.$patch"
+          echo "tag=v$major.$minor.$patch" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: version
+    # Runs on PRs (version is skipped there) and on main only when there's a release to make.
+    if: always() && (github.event_name != 'push' || needs.version.outputs.tag != '')
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --bin songrequestz
+        env:
+          SONGREQUESTZ_VERSION: ${{ needs.version.outputs.tag || 'dev' }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: songrequestz-windows
+          path: target/release/songrequestz.exe
+      - if: needs.version.outputs.tag != ''
+        run: >
+          gh release create "${{ needs.version.outputs.tag }}" target/release/songrequestz.exe
+          --target "${{ github.sha }}" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
