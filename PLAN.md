@@ -1,0 +1,127 @@
+# songrequestz plan
+
+Tiny Songify replacement, built like tikstream: one small Rust exe, FLTK window + tray, ~nothing idle.
+Song requests for **Pear Desktop** and **Spotify** only. It never logs into Twitch: **Streamer.bot owns
+every account**; songrequestz talks to Streamer.bot, to tikstream/TikFinity, and to the player.
+
+Drop-in: same port (65530), same JSON, same WebSocket commands, same `Songify.txt`/`cover.png`, same
+default chat commands. Close Songify first (same port).
+
+## Decisions (agreed)
+
+| topic | decision |
+|---|---|
+| Twitch | Subscribe to Streamer.bot's Twitch chat events over its WebSocket; handle commands here; reply with Streamer.bot `SendMessage`. No Twitch login, no SB C# actions needed. |
+| TikTok | Connect as a client to tikstream/TikFinity `ws://127.0.0.1:<port>/` (port configurable, default 21213), treat `chat` events like Twitch chat. songrequestz never replies on TikTok: it runs one configurable SB action with the result and SB decides (TTS, Twitch chat, nothing). |
+| Players | Pear first (full control, no account). Spotify read-only until Premium (now playing, overlay, files); write calls answer "Spotify needs Premium" when the API refuses. |
+| Spotify links on Pear | Convert: title/artist from Spotify's public oEmbed (no auth), search Pear, queue top hit. YouTube links/IDs go straight in. |
+| Commands | Songify defaults, each renamable, enable/disable, own permission: `!ssr !song !next !skip !voteskip !remove !pos !queue !vol !play !pause !cmds`. Defaults: everyone requests; mods (and broadcaster) skip/remove any; viewers remove only their own. Toggle for subs/VIP/followers-only requests. |
+| Replies | Every reply is an editable template with `%placeholders%` (`%user% %title% %artist% %pos% %count% %url% %votes% %needed%`...). |
+| Overlay API | Full Songify API (see below). |
+| UI | Same as tikstream: FLTK window + tray, starts hidden; Windows exe released by CI; Linux for dev. |
+| Repo | Public GitHub `songrequestz`, same rules/CI as tikstream (see `CLAUDE.md`). |
+| Not in v1 | Channel-point rewards, Songify cloud/premium, Twitch login, other players (VLC, foobar, Windows playback), history, polls. |
+
+## Protocols (from Songify source)
+
+### Pear Desktop (API Server plugin must be on)
+- REST base `http://127.0.0.1:26538/api/v1/`, header `Authorization: Bearer <token>` when auth is on.
+- Auth once: `POST http://127.0.0.1:26538/auth/songrequestz` → Pear shows Allow/Deny → `{"accessToken": "..."}`.
+  Save in config. 401 later = ask the user to authorize again (button in Settings).
+- `GET song-info` → `title artist imageSrc isPaused songDuration(s) elapsedSeconds url videoId playlistId`.
+- `GET queue`, `POST queue {videoId, insertPosition: "INSERT_AT_END"|"INSERT_AFTER_CURRENT_VIDEO"}`,
+  `DELETE queue/{index}`, `PATCH queue/{index} {toIndex}`.
+- `POST search {query}` → top song result (Songify's `YTHCHSearchParser` shows where it is in the JSON).
+- `POST next|previous|play|pause`, `GET/POST volume {volume}`, `POST seek-to {seconds}`.
+- Push, no polling: `ws://127.0.0.1:26538/api/v1/ws?token=<token>`, messages `{"type": ...}`:
+  `VIDEO_CHANGED` (new song), `PLAYER_STATE_CHANGED` (play/pause), `POSITION_CHANGED` (ignore unless needed).
+
+### Spotify (Web API, PKCE, user's own dashboard app)
+- User pastes their Client ID in Settings. Redirect URI `http://127.0.0.1:4002/auth` (loopback IP, not
+  `localhost`; same as Songify). PKCE in the browser, tiny one-shot listener on 4002, refresh token saved.
+- Scopes, minimal: `user-read-currently-playing user-read-playback-state user-modify-playback-state`.
+- Read (works without Premium): `GET /v1/me/player/currently-playing`, `GET /v1/search?type=track&limit=1`.
+- Write (Premium): `POST /v1/me/player/queue?uri=`, `POST next`, `PUT pause|play`, `PUT volume`.
+- Spotify has no push, so poll only while Spotify is the selected player: sleep until the current track
+  should end (+1 s), re-check at most every 10 s while playing and 30 s while paused/idle.
+- Can't remove from Spotify's queue: removed requests are skipped when they come up (Songify does this).
+- Verify the current dashboard rules (dev-mode user allowlist, Premium requirements) when we get there.
+
+### Streamer.bot (WebSocket, default `ws://127.0.0.1:8080/`, optional password)
+- Reuse tikstream's `src/streamerbot.rs` (auth, reconnect, `GetActions`, `DoAction`).
+- Add: `{"request":"Subscribe","id":"sub","events":{"Twitch":["ChatMessage"]}}` and read
+  `{"event":{"source":"Twitch","type":"ChatMessage"},"data":{...}}` (user name, message, roles).
+- Replies: `{"request":"SendMessage","id":"msg","platform":"twitch","bot":false,"message":"..."}`.
+- **Check real field names against the running Streamer.bot** (Wine, port 8080) before coding the parser:
+  subscribe, type in Twitch chat, dump what arrives. Same for `SendMessage`.
+- TikTok results: `DoAction` of the configured action with args
+  `platform user result message title artist url pos` (`result`: queued, blocked, full, notfound, error...).
+
+### tikstream / TikFinity (client)
+- `ws://127.0.0.1:<port>/`, messages `{"event":"chat","data":{"uniqueId","nickname","comment",
+  "isModerator","isSubscriber","followRole",...}}`. Ignore other events. Reconnect every 5 s when down,
+  quietly (like tikstream's Streamer.bot client). Empty URL = off.
+- Follow-up in tikstream: make its port configurable too (now fixed 21213), separate PR there.
+
+### Songify-compatible server (default port 65530, configurable; `127.0.0.1` only)
+- `GET /` → current JSON (503 `{"error":"Payload not available yet."}` before the first song).
+  Shape (PascalCase, as Songify): `UserInfo{TwitchUser{Id,Login,BroadcasterType},SpotifyUser{Id,DisplayName,Product}}`,
+  `SongifyInfo{Version,Beta}`, `Track{Data{Artists,Title,Albums[{Url,Width,Height}],SongId,DurationMs,
+  IsPlaying,Url,DurationPercentage,DurationTotal,Progress,Playlist},CanvasUrl,IsInLikedPlaylist,
+  Requester{Name,ProfilePicture}}`, `Queue{Count,Requests,Tracks,songRequests{chat,reward}}`.
+  Fill what we know, empty strings/false for the rest. Serialize once per change, share the bytes.
+- WebSocket `/ws/data`: push that JSON on every change.
+- WebSocket commands (any other path): `{"action": "...", "data": {...}, "password"?}`, answer
+  `Command executed: ...`: `auth queue_add{track,requester} skip|next play_pause|play|pause send_to_chat
+  sr_enable|sr_open sr_disable|sr_close vol_set vol_up vol_down block_artist block_all_artists block_song
+  block_user youtube play_playlist stop_sr_reward` (last three: accept, no-op or Spotify-only).
+  Optional password (`?password=`, `X-Songify-Password`, or the `auth` action), off by default.
+- Blocklists exist only because the API needs them: three plain string lists in config, matched
+  case-insensitively, editable as text in Settings.
+- Files next to the exe (folder configurable): `Songify.txt` (template, default `%artist% - %title%`,
+  emptied when paused if enabled) and `cover.png`. Write only when the song changes.
+
+## Queue rules
+- One list of requests: `{platform, user, track id, title, artist, duration, url}`.
+- Limits (config): max queue length, max per user, max song length, cooldown per user, requests open/closed.
+- `!ssr` accepts search text, Spotify link/URI, YouTube link/ID. Reply with position.
+- `!voteskip`: N distinct voters (config), reset on song change.
+- `!pos` = requester's positions; `!queue` = next few titles; `!song` = now playing (+ requester).
+- Request is dropped from the list when its song starts playing or is skipped.
+
+## Code layout (like tikstream, fewest files)
+
+| file | what |
+|---|---|
+| `src/main.rs` | config (`songrequestz.json` next to the exe), shared status, wiring, single-thread tokio |
+| `src/commands.rs` | chat → command, permissions, limits, queue, reply templates. Pure, unit-tested |
+| `src/player.rs` | `enum Player { Pear, Spotify }` with the few calls both need (no trait) |
+| `src/pear.rs` / `src/spotify.rs` | the two backends |
+| `src/streamerbot.rs` | from tikstream + Subscribe + SendMessage |
+| `src/tiktok.rs` | tikstream/TikFinity client |
+| `src/server.rs` | port 65530: JSON, `/ws/data`, WS commands, files |
+| `src/ui.rs` / `src/tray.rs` | from tikstream: tabs Status, Queue, Commands, Settings, Log |
+| `dev/` | `sbmock.py` (tikstream's + fake Twitch chat events + prints SendMessage), `tikmock.py` (fake :21213 chat) |
+
+Dependencies: tikstream's minus TikTok/wry/tao/sha2-only-if-needed; add a tiny HTTP client only if
+needed. Plain HTTP to Pear can be hand-written over `tokio::net::TcpStream`; Spotify needs TLS,
+pick the smallest option (e.g. `ureq` with rustls on a blocking task vs `reqwest`), measure RSS.
+
+## Phases (each = one PR)
+- [ ] 0. Scaffold: `cargo init`, copy CI from tikstream (`build.yml`, `lint.yml`; drop WebKitGTK and
+      login bits), README + DEVELOPING stubs, `git config core.hooksPath .githooks`,
+      `gh repo create songrequestz --public`, protect `main` (squash only, no direct push).
+- [ ] 1. Streamer.bot: connect, subscribe, log real Twitch chat events; `!song`-style echo test via SendMessage.
+- [ ] 2. Commands + queue in `commands.rs` with unit tests (no I/O).
+- [ ] 3. Pear: auth, song-info, WS push, search, enqueue, skip, remove, volume, Spotify-link conversion.
+- [ ] 4. Server: Songify JSON, `/ws/data`, WS commands, `Songify.txt`/`cover.png`.
+- [ ] 5. TikTok: client, SB result action. tikstream port-config PR.
+- [ ] 6. UI + tray + autostart, polish; measure RSS/CPU.
+- [ ] 7. Spotify: PKCE, read-only now playing; Premium writes behind API errors.
+
+## Testing
+- Real Streamer.bot is running locally (Wine, `ws://127.0.0.1:8080/`): use it for phase 1 and keep
+  checking with it. `dev/sbmock.py` for CI-free repeatable runs.
+- Pear Desktop has a Linux build: install it, enable API Server, test for real.
+- TikTok: run tikstream with `TIKSTREAM_DEV=1` + `uv run dev/fake.py chat "!ssr never gonna"`, or `dev/tikmock.py`.
+- Overlays: any existing Songify overlay pointed at `http://127.0.0.1:65530/` must work unchanged.

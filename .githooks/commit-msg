@@ -1,0 +1,3 @@
+#!/bin/sh
+# Conventional commit, one short line: "type(scope)?: subject" (see commitlint.config.mjs).
+exec npx --yes --package @commitlint/cli@21 --package @commitlint/config-conventional@21 commitlint --edit "$1"
