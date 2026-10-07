@@ -15,8 +15,8 @@ default chat commands. Close Songify first (same port).
 | TikTok | Connect as a client to tikstream/TikFinity `ws://127.0.0.1:<port>/` (port configurable, default 21213), treat `chat` events like Twitch chat. songrequestz never replies on TikTok: it runs one configurable SB action with the result and SB decides (TTS, Twitch chat, nothing). |
 | Players | Pear first (full control, no account). Spotify read-only until Premium (now playing, overlay, files); write calls answer "Spotify needs Premium" when the API refuses. |
 | Spotify links on Pear | Convert: title/artist from Spotify's public oEmbed (no auth), search Pear, queue top hit. YouTube links/IDs go straight in. |
-| Commands | Songify defaults, each renamable, enable/disable, own permission: `!ssr !song !next !skip !voteskip !remove !pos !queue !vol !play !pause !cmds`. Defaults: everyone requests; mods (and broadcaster) skip/remove any; viewers remove only their own. Toggle for subs/VIP/followers-only requests. |
-| Replies | Every reply is an editable template with `%placeholders%` (`%user% %title% %artist% %pos% %count% %url% %votes% %needed%`...). |
+| Commands | Songify defaults, each renamable, enable/disable, own permission (everyone, followers, subs, vips, mods, broadcaster), own optional SB action: `!ssr !song !next !skip !voteskip !remove !pos !queue !vol !play !pause !cmds !togglesr !bansong`. All enabled by default (Songify ships them off). Defaults: everyone requests; mods (and broadcaster) skip/remove any/play/pause/vol/togglesr/bansong; viewers remove only their own. Followers only on TikTok (SB's Twitch chat has no follow info; Twitch's followers-only chat covers it). |
+| Replies | Every command always answers (errors, empty queue, nothing playing, no permission, disabled...). Every reply is an editable template with Songify's `{placeholders}` (`{user} {cmd} {title} {artist} {single_artist} {song} {req} {pos} {url} {votes} {vol}`..., `{{...}}` only for requests), so Songify texts paste in unchanged. Empty template = no chat message. |
 | Overlay API | Full Songify API (see below). |
 | UI | Same as tikstream: FLTK window + tray, starts hidden; Windows exe released by CI; Linux for dev. |
 | Repo | Public GitHub `songrequestz`, same rules/CI as tikstream (see `CLAUDE.md`). |
@@ -52,8 +52,9 @@ default chat commands. Close Songify first (same port).
 - Add: `{"request":"Subscribe","id":"sub","events":{"Twitch":["ChatMessage"]}}` and read
   `{"event":{"source":"Twitch","type":"ChatMessage"},"data":{...}}` (user name, message, roles).
 - Replies: `{"request":"SendMessage","id":"msg","platform":"twitch","bot":false,"message":"..."}`.
-  Needs SB WebSocket authentication on; or `reply_action` (config): `DoAction` of that SB action with
-  `message`, for users who want auth off or their own reply handling. Both documented in README.
+  Needs SB WebSocket authentication on. Or an SB action: a command's own `action`, else `reply_action`
+  (config), run with `message` plus `command result platform` and the reply's parts (`user title pos`...),
+  for users who want auth off or their own handling. All documented in README.
 - **Check real field names against the running Streamer.bot** (Wine, port 8080) before coding the parser:
   subscribe, type in Twitch chat, dump what arrives. Same for `SendMessage`.
 - TikTok results: `DoAction` of the configured action with args
@@ -80,7 +81,7 @@ default chat commands. Close Songify first (same port).
   Optional password (`?password=`, `X-Songify-Password`, or the `auth` action), off by default.
 - Blocklists exist only because the API needs them: three plain string lists in config, matched
   case-insensitively, editable as text in Settings.
-- Files next to the exe (folder configurable): `Songify.txt` (template, default `%artist% - %title%`,
+- Files next to the exe (folder configurable): `Songify.txt` (template, default `{artist} - {title}`,
   emptied when paused if enabled) and `cover.png`. Write only when the song changes.
 
 ## Queue rules
@@ -119,7 +120,9 @@ pick the smallest option (e.g. `ureq` with rustls on a blocking task vs `reqwest
       `data.user.{name,login,role(1 viewer,2 VIP,3 mod,4 broadcaster),subscribed}`, `data.text`.
       For phase 2: our own replies come back as broadcaster chat (never start a reply with a command),
       and chat clients may append U+034F to repeated messages (trim it).
-- [ ] 2. Commands + queue in `commands.rs` with unit tests (no I/O).
+- [x] 2. Commands + queue in `commands.rs` with unit tests (no I/O). Wired to Twitch chat; player calls
+      answer "no player connected yet" until phase 3, which calls `add`/`not_found`/`player_error`/
+      `vol_reply`/`song_changed` and removes `Do::Removed` requests from the player queue.
 - [ ] 3. Pear: auth, song-info, WS push, search, enqueue, skip, remove, volume, Spotify-link conversion.
 - [ ] 4. Server: Songify JSON, `/ws/data`, WS commands, `Songify.txt`/`cover.png`.
 - [ ] 5. TikTok: client, SB result action. tikstream port-config PR.

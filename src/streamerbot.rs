@@ -1,6 +1,7 @@
 //! Streamer.bot client: authenticates, subscribes to Twitch chat (each message goes to main.rs) and
 //! sends the requests main.rs makes (chat replies, DoAction).
 
+use crate::commands::Reply;
 use crate::{say, Config};
 use base64::prelude::{Engine, BASE64_STANDARD};
 use futures_util::{SinkExt, StreamExt};
@@ -29,23 +30,28 @@ pub fn do_action(action: &str, args: &Value) -> String {
     )
 }
 
-/// A Twitch chat reply. Without a reply action it's SendMessage, which Streamer.bot only accepts
-/// with its WebSocket authentication on; the action gets the text as `message`.
-pub fn chat_reply(message: &str, action: &str) -> String {
+/// A chat reply. Without an action it goes to Twitch chat with SendMessage, which Streamer.bot
+/// only accepts with its WebSocket authentication on. An action gets the text as `message`, plus
+/// `command`, `result`, `platform` and the reply's parts (`user`, `title`, `pos`, ...).
+pub fn chat_reply(r: &Reply, platform: &str, action: &str) -> String {
     if action.is_empty() {
-        json!({ "request": "SendMessage", "id": "reply", "platform": "twitch", "bot": false, "message": message })
-            .to_string()
-    } else {
-        do_action(action, &json!({ "message": message }))
+        return json!({ "request": "SendMessage", "id": "reply", "platform": "twitch", "bot": false, "message": r.text })
+            .to_string();
     }
+    let mut args: serde_json::Map<String, Value> = r.args.iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
+    args.insert("message".into(), json!(r.text));
+    args.insert("command".into(), json!(r.command));
+    args.insert("result".into(), json!(r.result));
+    args.insert("platform".into(), json!(platform));
+    do_action(action, &Value::Object(args))
 }
 
 const SUBSCRIBE: &str = r#"{"request":"Subscribe","id":"subscribe","events":{"Twitch":["ChatMessage"]}}"#;
 
-const NO_AUTH: &str = "streamer.bot: authentication is off, so chat replies can't be sent. Either turn it on \
-(Streamer.bot: Servers/Clients > WebSocket Server > Enable Authentication, set a password) and put the password \
-in songrequestz.json (streamerbot_password), or make a Streamer.bot action with a Twitch \"Send Message\" \
-sub-action of %message% and put its name in songrequestz.json (reply_action)";
+const NO_AUTH: &str = "streamer.bot: authentication is off, so replies can't go straight to chat. Either turn \
+it on (Streamer.bot: Servers/Clients > WebSocket Server > Enable Authentication, set a password) and put the \
+password in songrequestz.json (streamerbot_password), or give replies a Streamer.bot action (reply_action for all, \
+or a command's own action) that sends %message% to chat; see the README";
 
 /// Handle a message from Streamer.bot; returns requests to send back.
 fn reply(text: &str, c: &Config, chat: &mpsc::UnboundedSender<Chat>) -> Vec<String> {
@@ -194,16 +200,21 @@ mod tests {
             auth("pw", "salt", "chal"),
             "Q0/N7u40IGqt4Ynf9v3w9R2yCDZxba9npsZLdIyWi8M="
         );
-        let req: Value = serde_json::from_str(&chat_reply("hi \"x\"", "")).unwrap();
+        let r = Reply {
+            command: "ssr",
+            result: "queued",
+            text: "hi \"x\"".into(),
+            args: vec![("pos", "#2".into())],
+        };
+        let req: Value = serde_json::from_str(&chat_reply(&r, "twitch", "")).unwrap();
         assert_eq!(
             (&req["request"], &req["message"]),
             (&json!("SendMessage"), &json!("hi \"x\""))
         );
-        let req: Value = serde_json::from_str(&chat_reply("hi", "Reply")).unwrap();
-        assert_eq!(
-            (&req["action"]["name"], &req["args"]["message"]),
-            (&json!("Reply"), &json!("hi"))
-        );
+        let req: Value = serde_json::from_str(&chat_reply(&r, "twitch", "Reply")).unwrap();
+        let want =
+            json!({"message": "hi \"x\"", "command": "ssr", "result": "queued", "platform": "twitch", "pos": "#2"});
+        assert_eq!((&req["action"]["name"], &req["args"]), (&json!("Reply"), &want));
     }
 
     #[test]
