@@ -1,0 +1,34 @@
+# Same checks as the git hooks in .githooks, so a PR can't skip them.
+name: lint
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+
+  commits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: >
+          npx --yes --package @commitlint/cli@21 --package @commitlint/config-conventional@21
+          commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }}
+        if: github.event_name == 'pull_request'
+      # The PR title becomes the squash-merge commit, so it follows the same rule.
+      - run: >
+          echo "$TITLE" | npx --yes --package @commitlint/cli@21 --package @commitlint/config-conventional@21
+          commitlint
+        if: github.event_name == 'pull_request'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}

@@ -108,7 +108,7 @@ needed. Plain HTTP to Pear can be hand-written over `tokio::net::TcpStream`; Spo
 pick the smallest option (e.g. `ureq` with rustls on a blocking task vs `reqwest`), measure RSS.
 
 ## Phases (each = one PR)
-- [ ] 0. Scaffold: `cargo init`, copy CI from tikstream (`build.yml`, `lint.yml`; drop WebKitGTK and
+- [x] 0. Scaffold: `cargo init`, copy CI from tikstream (`build.yml`, `lint.yml`; drop WebKitGTK and
       login bits), README + DEVELOPING stubs, `git config core.hooksPath .githooks`,
       `gh repo create songrequestz --public`, protect `main` (squash only, no direct push).
 - [ ] 1. Streamer.bot: connect, subscribe, log real Twitch chat events; `!song`-style echo test via SendMessage.
@@ -116,7 +116,8 @@ pick the smallest option (e.g. `ureq` with rustls on a blocking task vs `reqwest
 - [ ] 3. Pear: auth, song-info, WS push, search, enqueue, skip, remove, volume, Spotify-link conversion.
 - [ ] 4. Server: Songify JSON, `/ws/data`, WS commands, `Songify.txt`/`cover.png`.
 - [ ] 5. TikTok: client, SB result action. tikstream port-config PR.
-- [ ] 6. UI + tray + autostart, polish; measure RSS/CPU.
+- [ ] 6. UI + tray + autostart, polish; measure RSS/CPU. Bring back tikstream's FLTK bits
+      in CI (apt packages in `lint.yml`, static C runtime step in `build.yml`), icon + `build.rs`.
 - [ ] 7. Spotify: PKCE, read-only now playing; Premium writes behind API errors.
 
 ## Testing
