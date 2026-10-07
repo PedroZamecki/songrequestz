@@ -6,6 +6,7 @@
 - `main` is protected: no direct pushes. Work on a branch, open a pull request; it's squash-merged,
   so the PR title becomes the commit on `main` and must follow the same commit rule.
   No approvals required.
+- One PR at a time, never stacked: merge the open PR before branching the next one from `main`.
 - Branch names (suggested, not enforced): `type/short-description`, e.g. `feat/pear-queue`,
   `fix/tray-close`, using the same types as commits.
 - Before committing, `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` must pass
