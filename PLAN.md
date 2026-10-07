@@ -52,6 +52,8 @@ default chat commands. Close Songify first (same port).
 - Add: `{"request":"Subscribe","id":"sub","events":{"Twitch":["ChatMessage"]}}` and read
   `{"event":{"source":"Twitch","type":"ChatMessage"},"data":{...}}` (user name, message, roles).
 - Replies: `{"request":"SendMessage","id":"msg","platform":"twitch","bot":false,"message":"..."}`.
+  Needs SB WebSocket authentication on; or `reply_action` (config): `DoAction` of that SB action with
+  `message`, for users who want auth off or their own reply handling. Both documented in README.
 - **Check real field names against the running Streamer.bot** (Wine, port 8080) before coding the parser:
   subscribe, type in Twitch chat, dump what arrives. Same for `SendMessage`.
 - TikTok results: `DoAction` of the configured action with args
@@ -111,7 +113,12 @@ pick the smallest option (e.g. `ureq` with rustls on a blocking task vs `reqwest
 - [x] 0. Scaffold: `cargo init`, copy CI from tikstream (`build.yml`, `lint.yml`; drop WebKitGTK and
       login bits), README + DEVELOPING stubs, `git config core.hooksPath .githooks`,
       `gh repo create songrequestz --public`, protect `main` (squash only, no direct push).
-- [ ] 1. Streamer.bot: connect, subscribe, log real Twitch chat events; `!song`-style echo test via SendMessage.
+- [x] 1. Streamer.bot: connect, subscribe, log real Twitch chat events; `!song`-style echo test via SendMessage.
+      Found on SB 1.0.7: `SendMessage` needs SB authentication on (else "Authentication required"), so
+      `reply_action` (DoAction with `message`) is the alternative; wrong password = close 4009. Chat:
+      `data.user.{name,login,role(1 viewer,2 VIP,3 mod,4 broadcaster),subscribed}`, `data.text`.
+      For phase 2: our own replies come back as broadcaster chat (never start a reply with a command),
+      and chat clients may append U+034F to repeated messages (trim it).
 - [ ] 2. Commands + queue in `commands.rs` with unit tests (no I/O).
 - [ ] 3. Pear: auth, song-info, WS push, search, enqueue, skip, remove, volume, Spotify-link conversion.
 - [ ] 4. Server: Songify JSON, `/ws/data`, WS commands, `Songify.txt`/`cover.png`.
