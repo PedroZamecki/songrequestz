@@ -15,7 +15,6 @@ use tokio_tungstenite::tungstenite::Message;
 pub struct Chat {
     /// Display name.
     pub user: String,
-    pub login: String,
     /// Streamer.bot's role: 1 viewer, 2 VIP, 3 moderator, 4 broadcaster.
     pub role: u8,
     pub subscribed: bool,
@@ -92,7 +91,6 @@ fn chat_message(v: &Value) -> Option<Chat> {
     let (d, u) = (&v["data"], &v["data"]["user"]);
     Some(Chat {
         user: u["name"].as_str()?.into(),
-        login: u["login"].as_str()?.into(),
         role: u["role"].as_u64().unwrap_or(1) as u8,
         subscribed: u["subscribed"].as_bool().unwrap_or(false),
         text: d["text"].as_str()?.into(),
@@ -223,10 +221,7 @@ mod tests {
         let v = json!({"event":{"source":"Twitch","type":"ChatMessage"},"data":{"user":{"role":4,
             "subscribed":false,"login":"pedrozamecki","name":"PedroZamecki"},"text":"!ssr teste"}});
         let m = chat_message(&v).unwrap();
-        assert_eq!(
-            (m.user.as_str(), m.login.as_str(), m.role, m.subscribed),
-            ("PedroZamecki", "pedrozamecki", 4, false)
-        );
+        assert_eq!((m.user.as_str(), m.role, m.subscribed), ("PedroZamecki", 4, false));
         assert_eq!(m.text, "!ssr teste");
         assert!(chat_message(&json!({"id":"subscribe","status":"ok"})).is_none());
     }

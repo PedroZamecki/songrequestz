@@ -14,7 +14,7 @@ default chat commands. Close Songify first (same port).
 | Twitch | Subscribe to Streamer.bot's Twitch chat events over its WebSocket; handle commands here; reply with Streamer.bot `SendMessage`. No Twitch login, no SB C# actions needed. |
 | TikTok | Connect as a client to tikstream/TikFinity `ws://127.0.0.1:<port>/` (port configurable, default 21213), treat `chat` events like Twitch chat. songrequestz never replies on TikTok: it runs one configurable SB action with the result and SB decides (TTS, Twitch chat, nothing). |
 | Players | Pear first (full control, no account). Spotify read-only until Premium (now playing, overlay, files); write calls answer "Spotify needs Premium" when the API refuses. |
-| Spotify links on Pear | Convert: title/artist from Spotify's public oEmbed (no auth), search Pear, queue top hit. YouTube links/IDs go straight in. |
+| Spotify links on Pear | Convert: title/artist from the start of the track's public web page (`<title>`; oEmbed has no artist), fetched with the OS's `curl` (Windows 10+ has it) so the exe carries no TLS; search Pear, queue top hit. YouTube links/IDs go straight in. |
 | Commands | Songify defaults, each renamable, enable/disable, own permission (everyone, followers, subs, vips, mods, broadcaster), own optional SB action: `!ssr !song !next !skip !voteskip !remove !pos !queue !vol !play !pause !cmds !togglesr !bansong`. All enabled by default (Songify ships them off). Defaults: everyone requests; mods (and broadcaster) skip/remove any/play/pause/vol/togglesr/bansong; viewers remove only their own. Followers only on TikTok (SB's Twitch chat has no follow info; Twitch's followers-only chat covers it). |
 | Replies | Every command always answers (errors, empty queue, nothing playing, no permission, disabled...). Every reply is an editable template with Songify's `{placeholders}` (`{user} {cmd} {title} {artist} {single_artist} {song} {req} {pos} {url} {votes} {vol}`..., `{{...}}` only for requests), so Songify texts paste in unchanged. Empty template = no chat message. |
 | Overlay API | Full Songify API (see below). |
@@ -123,7 +123,13 @@ pick the smallest option (e.g. `ureq` with rustls on a blocking task vs `reqwest
 - [x] 2. Commands + queue in `commands.rs` with unit tests (no I/O). Wired to Twitch chat; player calls
       answer "no player connected yet" until phase 3, which calls `add`/`not_found`/`player_error`/
       `vol_reply`/`song_changed` and removes `Do::Removed` requests from the player queue.
-- [ ] 3. Pear: auth, song-info, WS push, search, enqueue, skip, remove, volume, Spotify-link conversion.
+- [x] 3. Pear: auth, song-info, WS push, search, enqueue, skip, remove, volume, Spotify-link conversion.
+      Found on Pear: an insert shows in `GET queue` only ~3 s later (it fetches the song first), so a
+      request is moved behind the earlier ones once it appears; `GET volume` reads a loudness curve,
+      not the slider (slider 40 reads 13), converted with a measured table; search and queue answers
+      are 260-500 KB, parsed into typed structs with only the fields used (a `Value` tree peaked at
+      ~7 MB). Search results in list form carry no length, so the length limit misses those.
+      The request queue lives in memory only (lost on restart).
 - [ ] 4. Server: Songify JSON, `/ws/data`, WS commands, `Songify.txt`/`cover.png`.
 - [ ] 5. TikTok: client, SB result action. tikstream port-config PR.
 - [ ] 6. UI + tray + autostart, polish; measure RSS/CPU. Bring back tikstream's FLTK bits

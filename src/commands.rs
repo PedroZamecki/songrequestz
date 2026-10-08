@@ -3,9 +3,6 @@
 //! Every command answers, whatever happens; a reply template left empty sends nothing to chat (its
 //! Streamer.bot action still runs).
 
-// ponytail: add, not_found, vol_reply and song_changed are for the player (phase 3).
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -158,6 +155,7 @@ pub struct Replies {
     pub blocked_song: String,
     pub in_queue: String,
     pub not_found: String,
+    pub bad_link: String,
     pub nothing_playing: String,
     pub queue_empty: String,
     pub no_requests: String,
@@ -184,6 +182,7 @@ impl Default for Replies {
             blocked_song: "@{user} the song: {song} has been blocked by the broadcaster.".into(),
             in_queue: "@{user} this song is already in the queue.".into(),
             not_found: "@{user} no track found for \"{query}\".".into(),
+            bad_link: "@{user} that link isn't a YouTube or Spotify song.".into(),
             nothing_playing: "@{user} nothing is playing right now.".into(),
             queue_empty: "@{user} the queue is empty.".into(),
             no_requests: "@{user} you have no songs in the current queue.".into(),
@@ -282,7 +281,7 @@ pub struct State {
 pub enum Do {
     Reply(Reply),
     /// Look it up on the player, then `add` what it finds (`not_found`, `player_error`).
-    Search(String),
+    Search(Query),
     /// Player calls: the reply goes out once it worked, `player_error` if it didn't.
     Skip(Reply),
     Play(Reply),
@@ -295,6 +294,50 @@ pub enum Do {
     Open(bool),
     /// Add this to blocked_songs and save (a Skip comes too).
     Ban(String),
+}
+
+/// What a request asks for.
+#[derive(PartialEq, Debug)]
+pub enum Query {
+    Text(String),
+    /// A YouTube video id.
+    Video(String),
+    /// A Spotify track link.
+    Spotify(String),
+}
+
+impl Query {
+    /// A request's text: a YouTube or Spotify song link or id, or words to search. None: a link to
+    /// something else (playlist, album, artist, another site).
+    pub fn parse(arg: &str) -> Option<Query> {
+        let id_ok = |id: &str| id.len() == 11 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if let Some(id) = arg.strip_prefix("spotify:track:") {
+            return Some(Query::Spotify(format!("https://open.spotify.com/track/{id}")));
+        }
+        let Some(rest) = arg.strip_prefix("https://").or_else(|| arg.strip_prefix("http://")) else {
+            // ponytail: an 11-character word with a digit, - or _ is taken for a video id; all-letter
+            // ids get searched, and YouTube finds a video by its id anyway.
+            let is_id = id_ok(arg) && !arg.chars().all(|c| c.is_ascii_alphabetic());
+            return Some(if is_id {
+                Query::Video(arg.into())
+            } else {
+                Query::Text(arg.into())
+            });
+        };
+        let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let host = host.trim_start_matches("www.").trim_start_matches("m.");
+        let video = match host {
+            "open.spotify.com" if path.contains("track/") => return Some(Query::Spotify(arg.into())),
+            "spotify.link" | "spotify.app.link" => return Some(Query::Spotify(arg.into())),
+            "youtu.be" => path.split(['?', '/']).next(),
+            "youtube.com" | "music.youtube.com" => match path.split_once('/') {
+                Some(("shorts" | "live", p)) => p.split(['?', '/']).next(),
+                _ => path.split(['?', '&']).find_map(|p| p.strip_prefix("v=")),
+            },
+            _ => None,
+        };
+        video.filter(|id| id_ok(id)).map(|id| Query::Video(id.into()))
+    }
 }
 
 /// A chat reply, and what went into it: the args of the command's Streamer.bot action.
@@ -420,7 +463,10 @@ pub fn handle(cfg: &Requests, st: &mut State, m: &Msg, now: u64) -> Vec<Do> {
             if let Some(no) = limits(cfg, st, m.platform, user, now) {
                 return vec![Do::Reply(no)];
             }
-            vec![Do::Search(arg.into())]
+            match Query::parse(arg) {
+                Some(q) => vec![Do::Search(q)],
+                None => reply("badlink", &r.bad_link, &[]),
+            }
         }
         "song" => match &current {
             Some(vars) => reply("ok", &c.reply, vars),
@@ -617,6 +663,13 @@ pub fn add(cfg: &Requests, st: &mut State, platform: &'static str, user: &str, t
     out("ssr", result, t, &v)
 }
 
+/// The player couldn't queue what `add` just took: forget it, cooldown included.
+pub fn undo_add(st: &mut State) {
+    if let Some(q) = st.queue.pop() {
+        st.last.remove(&key(q.platform, &q.user));
+    }
+}
+
 /// The player found nothing for a request.
 pub fn not_found(cfg: &Requests, user: &str, query: &str) -> Reply {
     out(
@@ -765,11 +818,11 @@ mod tests {
             "@Ana only subs or higher can use !ssr."
         );
         let out = handle(&cfg, s, &msg("Vic", Who::Vips, "!ssr x"), 0);
-        assert_eq!(out, vec![Do::Search("x".into())]);
+        assert_eq!(out, vec![Do::Search(Query::Text("x".into()))]);
         // Renamed, case-insensitive, with the trailing U+034F some clients add.
         cfg.commands.ssr.trigger = "!sr".into();
         let out = handle(&cfg, s, &msg("Vic", Who::Vips, "!SR never gonna \u{34f}"), 0);
-        assert_eq!(out, vec![Do::Search("never gonna".into())]);
+        assert_eq!(out, vec![Do::Search(Query::Text("never gonna".into()))]);
         // Disabled.
         cfg.commands.ssr.enabled = false;
         assert_eq!(
@@ -802,6 +855,56 @@ mod tests {
         let out = handle(&cfg, s, &msg("M", Who::Broadcaster, "!togglesr"), 0);
         assert_eq!(out[0], Do::Open(false));
         assert_eq!(replies(&out), [("ok", "Song requests are now disabled")]);
+    }
+
+    #[test]
+    fn request_text() {
+        let v = |id: &str| Some(Query::Video(id.into()));
+        assert_eq!(Query::parse("never gonna"), Some(Query::Text("never gonna".into())));
+        assert_eq!(Query::parse("despacito"), Some(Query::Text("despacito".into())));
+        assert_eq!(Query::parse("dQw4w9WgXcQ"), v("dQw4w9WgXcQ"));
+        assert_eq!(
+            Query::parse("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=1"),
+            v("dQw4w9WgXcQ")
+        );
+        assert_eq!(
+            Query::parse("https://music.youtube.com/watch?list=x&v=dQw4w9WgXcQ"),
+            v("dQw4w9WgXcQ")
+        );
+        assert_eq!(Query::parse("https://youtu.be/dQw4w9WgXcQ?si=abc"), v("dQw4w9WgXcQ"));
+        assert_eq!(Query::parse("https://youtube.com/shorts/dQw4w9WgXcQ"), v("dQw4w9WgXcQ"));
+        let sp = "https://open.spotify.com/intl-pt/track/4PTG3Z6ehGkBFwjybzWkR8?si=1";
+        assert_eq!(Query::parse(sp), Some(Query::Spotify(sp.into())));
+        let sp = "https://open.spotify.com/track/4PTG3Z6ehGkBFwjybzWkR8";
+        assert_eq!(
+            Query::parse("spotify:track:4PTG3Z6ehGkBFwjybzWkR8"),
+            Some(Query::Spotify(sp.into()))
+        );
+        for bad in [
+            "https://open.spotify.com/album/1",
+            "https://open.spotify.com/playlist/1",
+            "https://www.youtube.com/playlist?list=PL1",
+            "https://soundcloud.com/a/b",
+            "https://youtu.be/short",
+        ] {
+            assert_eq!(Query::parse(bad), None, "{bad}");
+        }
+        let cfg = Requests::default();
+        let mut st = State::default();
+        let want = "@Ana that link isn't a YouTube or Spotify song.";
+        assert_eq!(
+            one(say(&cfg, &mut st, "Ana", Who::Followers, "!ssr https://x.com/y")).1,
+            want
+        );
+        // A request the player couldn't queue is forgotten, cooldown too.
+        let cfg = Requests {
+            cooldown_s: 60,
+            ..Default::default()
+        };
+        assert_eq!(request(&cfg, &mut st, "Ana", track("a", "X", 1), 0).0, "queued");
+        undo_add(&mut st);
+        assert!(st.queue.is_empty());
+        assert_eq!(request(&cfg, &mut st, "Ana", track("a", "X", 1), 1).0, "queued");
     }
 
     #[test]
