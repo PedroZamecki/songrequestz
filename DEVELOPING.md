@@ -30,6 +30,14 @@ password). Type chat lines into the mock: `!song` (viewer Ana), `Bob: !ssr never
 real one, `SendMessage` needs authentication on. The real Streamer.bot (`ws://127.0.0.1:8080/`) works
 the same way.
 
+## Pear Desktop
+
+Pear has a Linux build: run it with the API Server plugin on (try both with and without its
+authorization). Its API is plain HTTP on `http://127.0.0.1:26538/api/v1/` (`song-info`, `queue`,
+`search`, ...), handy to compare with what songrequestz does, e.g.
+`curl -s http://127.0.0.1:26538/api/v1/queue` (add `-H "Authorization: Bearer <pear_token>"` when
+authorization is on).
+
 ## Checks (same as the hooks and CI)
 
 ```

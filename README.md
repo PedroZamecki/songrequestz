@@ -41,7 +41,18 @@ How a reply is sent, per command:
   - `%platform%`: `twitch` (or `tiktok`), and the reply's placeholders as arguments too
     (`%user%`, `%title%`, `%artist%`, `%song%`, `%pos%`, `%votes%`, ...).
 
-## Commands
+## Pear Desktop
+
+Install [Pear Desktop](https://github.com/pear-devs/pear-desktop) and turn on its **API Server**
+plugin (default port 26538). songrequestz connects by itself, and reconnects whenever Pear starts.
+If the API Server asks for authorization, Pear shows a prompt the first time: click **Allow**; the
+token is saved in `songrequestz.json` (`pear_token`; empty it to authorize again).
+
+Requests go into Pear's queue in request order, after the playing song and ahead of Pear's own
+autoplay. `!ssr` takes words to search, a YouTube or YouTube Music link or video id, or a Spotify
+track link (looked up by name on YouTube Music; needs `curl`, which Windows 10 and later have).
+
+
 
 Songify's chat commands, all on by default. Each one in `requests.commands` has `trigger` (rename
 it, without the `!`), `enabled`, `who` (`everyone`, `followers`, `subs`, `vips`, `mods`,

@@ -4,7 +4,7 @@ version = "0.0.0" # unused: releases are versioned by git tags (see build workfl
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["rt", "macros", "net", "sync", "time"] }
+tokio = { version = "1", features = ["rt", "macros", "net", "sync", "time", "io-util", "process"] }
 tokio-tungstenite = "0.26"
 futures-util = "0.3"
 serde_json = "1"
