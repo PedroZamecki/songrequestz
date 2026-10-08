@@ -22,6 +22,10 @@ pub enum Event {
     Song(Option<Track>),
     /// Pear authorized songrequestz: save this token.
     Token(String),
+    /// Playing or paused, and where in the song (seconds).
+    State(bool, u32),
+    /// Where in the song (seconds).
+    Position(u32),
 }
 
 /// One request to Pear's API; the body of a 2xx answer, or why not (for chat).
@@ -134,6 +138,7 @@ struct Section {
 struct Card {
     title: Option<Runs>,
     subtitle: Option<Runs>,
+    thumbnail: Option<Thumbnail>,
 }
 #[derive(Deserialize)]
 struct Items {
@@ -149,9 +154,39 @@ struct Item {
 #[serde(rename_all = "camelCase")]
 struct ListItem {
     playlist_item_data: Option<VideoId>,
+    thumbnail: Option<Thumbnail>,
     #[serde(default)]
     flex_columns: Vec<Column>,
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Thumbnail {
+    music_thumbnail_renderer: Option<ThumbnailRenderer>,
+}
+#[derive(Deserialize)]
+struct ThumbnailRenderer {
+    thumbnail: Option<Thumbnails>,
+}
+#[derive(Deserialize)]
+struct Thumbnails {
+    #[serde(default)]
+    thumbnails: Vec<Url>,
+}
+#[derive(Deserialize)]
+struct Url {
+    url: String,
+}
+
+impl Thumbnail {
+    /// The biggest one (they come smallest first).
+    fn url(t: &Option<Thumbnail>) -> &str {
+        let t = t
+            .as_ref()
+            .and_then(|t| t.music_thumbnail_renderer.as_ref()?.thumbnail.as_ref());
+        t.and_then(|t| t.thumbnails.last()).map_or("", |u| &u.url)
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Column {
@@ -234,7 +269,12 @@ fn songs(body: &str) -> Result<Vec<Track>, String> {
         let title = c.title.as_ref().and_then(|t| t.runs.first());
         if let Some(id) = title.and_then(Run::video) {
             let sub = c.subtitle.as_ref().map_or(&[][..], |s| &s.runs);
-            out.push(track(id, title.map_or("", |t| &t.text), sub.iter()));
+            out.push(track(
+                id,
+                title.map_or("", |t| &t.text),
+                sub.iter(),
+                Thumbnail::url(&c.thumbnail),
+            ));
         }
     }
     let lists = sections
@@ -253,7 +293,8 @@ fn songs(body: &str) -> Result<Vec<Track>, String> {
             .first()
             .and_then(|c| runs(c).first())
             .map_or("", |r| &r.text);
-        out.push(track(id, title, i.flex_columns.iter().skip(1).flat_map(runs)));
+        let runs = i.flex_columns.iter().skip(1).flat_map(runs);
+        out.push(track(id, title, runs, Thumbnail::url(&i.thumbnail)));
     }
     Ok(out)
 }
@@ -266,7 +307,7 @@ fn runs(c: &Column) -> &[Run] {
     t.map_or(&[], |t| &t.runs)
 }
 
-fn track<'a>(id: &str, title: &str, runs: impl Iterator<Item = &'a Run> + Clone) -> Track {
+fn track<'a>(id: &str, title: &str, runs: impl Iterator<Item = &'a Run> + Clone, cover: &str) -> Track {
     let artists: Vec<&str> = (runs.clone())
         .filter(|r| {
             matches!(
@@ -282,6 +323,7 @@ fn track<'a>(id: &str, title: &str, runs: impl Iterator<Item = &'a Run> + Clone)
         artist: artists.join(", "),
         seconds: runs.filter_map(|r| seconds(&r.text)).next().unwrap_or(0),
         url: watch_url(id),
+        cover: cover.into(),
     }
 }
 
@@ -495,16 +537,12 @@ pub async fn run(mut cfg: watch::Receiver<Config>, tx: mpsc::UnboundedSender<Eve
                     tokio::select! {
                         m = ws.next() => match m {
                             Some(Ok(Message::Text(t))) => {
-                                // Position updates come every second while playing: skip them unparsed.
-                                if !t.contains("\"VIDEO_CHANGED\"") && !t.contains("\"PLAYER_INFO\"") {
-                                    continue;
-                                }
-                                if let Ok(v) = serde_json::from_str::<Value>(&t) {
-                                    if let Some(song) = now_playing(&v["song"]) {
-                                        let _ = tx.send(Event::Song(Some(song)));
+                                    if let Some(e) = message(&t) {
+                                        for e in e {
+                                            let _ = tx.send(e);
+                                        }
                                     }
                                 }
-                            }
                             // Pear closes with 1008 when it wants authorization.
                             Some(Ok(Message::Close(Some(f)))) => unauthorized = u16::from(f.code) == 1008,
                             Some(Ok(_)) => {}
@@ -567,6 +605,24 @@ fn now_playing(s: &Value) -> Option<Track> {
         artist: s["artist"].as_str().unwrap_or("").into(),
         seconds: s["songDuration"].as_u64().unwrap_or(0) as u32,
         url: s["url"].as_str().map_or_else(|| watch_url(id), String::from),
+        cover: s["imageSrc"].as_str().unwrap_or("").into(),
+    })
+}
+
+/// What a Pear WebSocket message says: the song (PLAYER_INFO when connecting, VIDEO_CHANGED), and
+/// play state and position (PLAYER_STATE_CHANGED, POSITION_CHANGED every second while playing).
+fn message(t: &str) -> Option<Vec<Event>> {
+    let v: Value = serde_json::from_str(t).ok()?;
+    let pos = |p: &Value| p.as_f64().unwrap_or(0.0) as u32;
+    Some(match v["type"].as_str()? {
+        "PLAYER_INFO" | "VIDEO_CHANGED" => {
+            let s = &v["song"];
+            let state = Event::State(s["isPaused"] != true, pos(&s["elapsedSeconds"]));
+            vec![Event::Song(Some(now_playing(s)?)), state]
+        }
+        "PLAYER_STATE_CHANGED" => vec![Event::State(v["isPlaying"] == true, pos(&v["position"]))],
+        "POSITION_CHANGED" => vec![Event::Position(pos(&v["position"]))],
+        _ => return None,
     })
 }
 

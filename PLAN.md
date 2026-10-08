@@ -82,7 +82,8 @@ default chat commands. Close Songify first (same port).
 - Blocklists exist only because the API needs them: three plain string lists in config, matched
   case-insensitively, editable as text in Settings.
 - Files next to the exe (folder configurable): `Songify.txt` (template, default `{artist} - {title}`,
-  emptied when paused if enabled) and `cover.png`. Write only when the song changes.
+  `paused_text` while paused: unset keeps the song, "" empties it, text replaces it) and `cover.png`
+  (the image as downloaded, via the OS's `curl`; a blank PNG when paused/none). Write only on change.
 
 ## Queue rules
 - One list of requests: `{platform, user, track id, title, artist, duration, url}`.
@@ -130,7 +131,11 @@ pick the smallest option (e.g. `ureq` with rustls on a blocking task vs `reqwest
       are 260-500 KB, parsed into typed structs with only the fields used (a `Value` tree peaked at
       ~7 MB). Search results in list form carry no length, so the length limit misses those.
       The request queue lives in memory only (lost on restart).
-- [ ] 4. Server: Songify JSON, `/ws/data`, WS commands, `Songify.txt`/`cover.png`.
+- [x] 4. Server: Songify JSON, `/ws/data`, WS commands, `Songify.txt`/`cover.png`.
+      Checked with Songify's own free widgets (pill-player: title, artist, time, progress live). Widget
+      links need `?ws=65530` (their default is 22345; Songify's gallery adds it). Chrome asks to allow
+      local network access for widgets loaded from songify.rocks (same as with Songify). `Tracks` =
+      the requests (not Pear's whole queue). Payload pushed every second while playing (position).
 - [ ] 5. TikTok: client, SB result action. tikstream port-config PR.
 - [ ] 6. UI + tray + autostart, polish; measure RSS/CPU. Bring back tikstream's FLTK bits
       in CI (apt packages in `lint.yml`, static C runtime step in `build.yml`), icon + `build.rs`.
