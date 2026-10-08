@@ -241,6 +241,8 @@ pub struct Track {
     pub artist: String,
     pub seconds: u32,
     pub url: String,
+    /// Cover image URL.
+    pub cover: String,
 }
 
 impl Track {
@@ -702,6 +704,22 @@ pub fn vol_reply(cfg: &Requests, user: &str, vol: u8) -> Reply {
     )
 }
 
+/// The !song reply without a user, for sending to chat unasked (Songify's send_to_chat).
+pub fn now_playing(cfg: &Requests, st: &State) -> Option<Reply> {
+    let t = st.current.as_ref()?;
+    let template = cfg.commands.song.reply.replace("@{user}", "").replace("{user}", "");
+    let song = t.song();
+    let vars = [
+        ("artist", t.artist.as_str()),
+        ("single_artist", first_artist(&t.artist)),
+        ("title", &t.title),
+        ("song", &song),
+        ("url", &t.url),
+        ("req", &st.current_by),
+    ];
+    Some(out("song", "ok", &template, &vars))
+}
+
 /// A new song started (None: nothing playing). Its request leaves the queue, skip votes reset.
 pub fn song_changed(st: &mut State, track: Option<Track>) {
     st.votes.clear();
@@ -725,6 +743,7 @@ mod tests {
             artist: artist.into(),
             seconds,
             url: String::new(),
+            cover: String::new(),
         }
     }
 
@@ -1001,6 +1020,8 @@ mod tests {
         // The request starts playing: off the queue, and !song names the requester.
         song_changed(s, Some(track("a1", "Rick Astley, Other", 200)));
         assert!(s.queue.is_empty());
+        let r = now_playing(&cfg, s).unwrap();
+        assert_eq!(r.text, "Rick Astley - Song a1 requested by @Ana");
         let want = "@Bob Rick Astley - Song a1 requested by @Ana";
         assert_eq!(one(say(&cfg, s, "Bob", Who::Followers, "!song")).1, want);
         song_changed(s, Some(track("z", "Radio", 200)));

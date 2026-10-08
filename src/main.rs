@@ -3,11 +3,14 @@
 
 mod commands;
 mod pear;
+mod server;
 mod streamerbot;
 
 use commands::{Do, Query, Reply};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, watch};
 
@@ -22,6 +25,17 @@ struct Config {
     reply_action: String,
     /// Pear's API token, when its API Server asks for authorization (filled in by itself).
     pear_token: String,
+    /// Songify's API port (read at start).
+    port: u16,
+    /// Songify's API password; empty: none.
+    api_password: String,
+    /// Folder for Songify.txt and cover.png; empty: next to the exe.
+    files_dir: String,
+    /// Songify.txt: Songify's {placeholders} (artist, single_artist, title, req, url, uri).
+    output: String,
+    /// Songify.txt while paused: null keeps the song, "" empties it, any other text replaces it.
+    /// Empty or text also blanks cover.png.
+    paused_text: Option<String>,
     requests: commands::Requests,
 }
 
@@ -32,6 +46,11 @@ impl Default for Config {
             streamerbot_password: String::new(),
             reply_action: String::new(),
             pear_token: String::new(),
+            port: 65530,
+            api_password: String::new(),
+            files_dir: String::new(),
+            output: "{artist} - {title}".into(),
+            paused_text: None,
             requests: commands::Requests::default(),
         }
     }
@@ -70,12 +89,27 @@ fn load() -> Config {
     c
 }
 
+/// A transparent 1x1 PNG: cover.png when there's no cover (Songify writes an empty image too).
+const BLANK_PNG: [u8; 68] = [
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196,
+    137, 0, 0, 0, 11, 73, 68, 65, 84, 120, 156, 99, 96, 0, 2, 0, 0, 5, 0, 1, 122, 94, 171, 63, 0, 0, 0, 0, 73, 69, 78,
+    68, 174, 66, 96, 130,
+];
+
 /// The request queue and what the chat commands need, owned by the main loop.
 struct App {
     cfg: watch::Sender<Config>,
     sb: mpsc::UnboundedSender<String>,
     st: commands::State,
     start: Instant,
+    /// Pear's play state and position (seconds) in the song.
+    playing: bool,
+    position: u32,
+    /// Songify's JSON, for the API (empty: nothing played yet).
+    payload: watch::Sender<Arc<str>>,
+    /// What Songify.txt and cover.png hold now, so they're written only when that changes.
+    text: Option<String>,
+    cover: Option<String>,
 }
 
 impl App {
@@ -152,6 +186,7 @@ impl App {
                 }
             }
         }
+        self.publish();
     }
 
     /// Find a request on Pear and queue it there.
@@ -186,6 +221,246 @@ impl App {
         }
         Ok(r)
     }
+
+    /// A Songify API WebSocket command; the answer goes back to the client.
+    async fn api(&mut self, action: &str, data: &Value) -> String {
+        let token = self.cfg.borrow().pear_token.clone();
+        let current = self.st.current.clone();
+        let answer = match action {
+            "queue_add" => {
+                let track = data["track"].as_str().unwrap_or("").trim();
+                let user = data["requester"].as_str().unwrap_or("").to_string();
+                let now = self.start.elapsed().as_secs();
+                match Query::parse(track) {
+                    _ if track.is_empty() => "No track provided.".into(),
+                    None => "That link isn't a YouTube or Spotify song.".into(),
+                    Some(q) => match self.request("twitch", &user, q, &token, now).await {
+                        Ok(r) => r.text,
+                        Err(e) => e,
+                    },
+                }
+            }
+            "skip" | "next" => pear::player(&token, "next")
+                .await
+                .map_or_else(|e| e, |_| "Song skipped.".into()),
+            "play" | "pause" | "play_pause" => {
+                let pause = action == "pause" || (action == "play_pause" && self.playing);
+                let (what, done) = if pause {
+                    ("pause", "Playback paused.")
+                } else {
+                    ("play", "Playback resumed.")
+                };
+                match pear::player(&token, what).await {
+                    // Pear says so too, but maybe not before the next command.
+                    Ok(()) => {
+                        self.playing = !pause;
+                        done.into()
+                    }
+                    Err(e) => e,
+                }
+            }
+            "vol_set" | "vol_up" | "vol_down" => {
+                let set = match action {
+                    "vol_set" => Ok(data["value"].as_f64().unwrap_or(0.0)),
+                    // ponytail: Pear reads a new volume back ~0.3 s late, so a step right after a set
+                    // starts from the old one.
+                    _ => pear::volume(&token, None)
+                        .await
+                        .map(|v| v as f64 + if action == "vol_up" { 5.0 } else { -5.0 }),
+                };
+                match set {
+                    Ok(v) => match pear::volume(&token, Some(v.clamp(0.0, 100.0) as u8)).await {
+                        Ok(v) => format!("Volume set to {v}%"),
+                        Err(e) => e,
+                    },
+                    Err(e) => e,
+                }
+            }
+            "send_to_chat" => match commands::now_playing(&self.cfg.borrow().requests, &self.st) {
+                Some(r) => {
+                    self.send("twitch", r);
+                    "Current song sent to chat.".into()
+                }
+                None => "Nothing is playing.".into(),
+            },
+            "sr_enable" | "sr_open" | "sr_disable" | "sr_close" => {
+                let open = action == "sr_enable" || action == "sr_open";
+                self.change(|c| c.requests.open = open);
+                if open {
+                    "Song requests enabled."
+                } else {
+                    "Song requests disabled."
+                }
+                .into()
+            }
+            "block_artist" | "block_all_artists" => match &current {
+                Some(t) => {
+                    let all: Vec<String> = t.artist.split(',').map(|a| a.trim().to_string()).collect();
+                    let artists = if action == "block_artist" {
+                        all[..1].to_vec()
+                    } else {
+                        all
+                    };
+                    self.change(|c| c.requests.blocked_artists.extend(artists));
+                    if action == "block_artist" {
+                        "Artist blocked."
+                    } else {
+                        "All artists blocked."
+                    }
+                    .into()
+                }
+                None => "Nothing is playing.".into(),
+            },
+            "block_song" => match &current {
+                Some(t) => {
+                    self.change(|c| c.requests.blocked_songs.push(t.id.clone()));
+                    let _ = pear::player(&token, "next").await;
+                    "Song blocked.".into()
+                }
+                None => "Nothing is playing.".into(),
+            },
+            "block_user" => match self.st.current_by.clone() {
+                u if u.is_empty() => "No user to block.".into(),
+                u => {
+                    self.change(|c| c.requests.blocked_users.push(u.clone()));
+                    format!("User {u} blocked")
+                }
+            },
+            // Songify's YouTube browser companion feed: nothing to do with Pear.
+            "youtube" => String::new(),
+            "play_playlist" => "Not supported: playlists are Spotify only.".into(),
+            "stop_sr_reward" => "Not supported: songrequestz has no channel point rewards.".into(),
+            _ => format!("Unknown action: {action}"),
+        };
+        say(format!("api: {action}: {answer}"));
+        self.publish();
+        answer
+    }
+
+    /// Rebuild Songify's JSON and hand it to the API (pushed to /ws/data only when it changed).
+    fn publish(&self) {
+        let Some(json) = self.payload_json() else { return };
+        self.payload.send_if_modified(|p| {
+            let new = **p != *json;
+            if new {
+                *p = json.into();
+            }
+            new
+        });
+    }
+
+    /// Songify's payload, same names and shape; what Pear doesn't have is empty.
+    fn payload_json(&self) -> Option<String> {
+        let t = self.st.current.as_ref()?;
+        let cfg = self.cfg.borrow();
+        let ms = t.seconds as u64 * 1000;
+        let progress = self.position as u64 * 1000;
+        let percent = (progress * 100).checked_div(ms).unwrap_or(0).min(100);
+        let artist = json!({"ExternalUrls": {}, "Href": "", "Id": "", "Name": t.artist, "Type": "", "Uri": ""});
+        let requests: Vec<Value> = (self.st.queue.iter().enumerate())
+            .map(|(i, q)| {
+                json!({
+                    "queueid": i + 1, "uuid": "", "trackid": q.track.id, "artist": q.track.artist,
+                    "title": q.track.title, "length": format!("{}:{:02}", q.track.seconds / 60, q.track.seconds % 60),
+                    "requester": q.user, "albumcover": q.track.cover, "playerType": "YouTube", "streamId": "",
+                    "IsLiked": false, "FullRequester": null,
+                })
+            })
+            .collect();
+        let chat = cfg.requests.open && cfg.requests.commands.ssr.enabled;
+        let v = json!({
+            "UserInfo": {
+                "TwitchUser": {"Id": "", "Login": "", "BroadcasterType": ""},
+                "SpotifyUser": {"Id": "", "DisplayName": "", "Product": ""},
+            },
+            "SongifyInfo": {"Version": option_env!("SONGREQUESTZ_VERSION").unwrap_or("dev"), "Beta": false},
+            "Track": {
+                "Data": {
+                    "Artists": t.artist, "Title": t.title,
+                    "Albums": [{"Url": t.cover, "Width": 0, "Height": 0}],
+                    "SongId": t.id, "DurationMs": ms, "IsPlaying": self.playing, "Url": t.url,
+                    "DurationPercentage": percent, "DurationTotal": ms, "Progress": progress,
+                    "Playlist": {"Name": null, "Id": null, "Owner": null, "Url": "", "Image": null},
+                    "FullArtists": [artist],
+                },
+                "CanvasUrl": "",
+                "IsInLikedPlaylist": false,
+                "Requester": {"Name": self.st.current_by, "ProfilePicture": ""},
+            },
+            // ponytail: Tracks is Songify's view of the player's whole upcoming queue; here it's the
+            // requests, since reading Pear's queue (~500 KB) on every change isn't worth it.
+            "Queue": {"Count": requests.len(), "Requests": requests, "Tracks": requests, "songRequests": {"chat": chat, "reward": false}},
+        });
+        Some(serde_json::to_string_pretty(&v).unwrap_or_default())
+    }
+
+    /// Songify.txt and cover.png, written only when what they should hold changes.
+    async fn files(&mut self) {
+        let Some(t) = &self.st.current else { return };
+        let cfg = self.cfg.borrow().clone();
+        let dir = match cfg.files_dir.trim() {
+            "" => config_path().with_file_name(""),
+            d => PathBuf::from(d),
+        };
+        let paused = (!self.playing).then_some(cfg.paused_text.as_ref()).flatten();
+        let song = || {
+            let vars = [
+                ("artist", t.artist.as_str()),
+                ("single_artist", t.artist.split(',').next().unwrap_or("").trim()),
+                ("title", &t.title),
+                ("req", &self.st.current_by),
+                ("url", &t.url),
+                ("uri", &t.id),
+                ("extra", ""),
+            ];
+            commands::fill(&cfg.output, &vars)
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let text = paused.cloned().unwrap_or_else(song);
+        if self.text.as_ref() != Some(&text) {
+            if let Err(e) = std::fs::write(dir.join("Songify.txt"), &text) {
+                say(format!("can't write Songify.txt ({e})"));
+            }
+            self.text = Some(text);
+        }
+        let cover = if paused.is_some() {
+            String::new()
+        } else {
+            t.cover.clone()
+        };
+        if self.cover.as_ref() != Some(&cover) {
+            // ponytail: awaited here, so chat waits for the download (~0.2 s) once per song.
+            if let Err(e) = write_cover(&dir, &cover).await {
+                say(format!("can't write cover.png ({e})"));
+            }
+            self.cover = Some(cover);
+        }
+    }
+}
+
+/// cover.png: the image at `url` as it is (OBS reads it whatever its format), or a blank one. Fetched
+/// with the OS's curl, like Spotify pages, then renamed in so OBS never sees half a file.
+async fn write_cover(dir: &std::path::Path, url: &str) -> Result<(), String> {
+    let (tmp, file) = (dir.join("cover.tmp"), dir.join("cover.png"));
+    if url.is_empty() {
+        std::fs::write(&tmp, BLANK_PNG).map_err(|e| e.to_string())?;
+    } else {
+        let mut cmd = tokio::process::Command::new("curl");
+        cmd.args(["-sfL", "-m", "10", "-o"]).arg(&tmp).arg(url);
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        let ok = cmd
+            .status()
+            .await
+            .map_err(|e| format!("can't run curl ({e})"))?
+            .success();
+        if !ok {
+            return Err(format!("couldn't download {url}"));
+        }
+    }
+    std::fs::rename(&tmp, &file).map_err(|e| e.to_string())
 }
 
 fn main() {
@@ -194,15 +469,27 @@ fn main() {
         "songrequestz {}",
         option_env!("SONGREQUESTZ_VERSION").unwrap_or("dev")
     ));
-    let cfg_tx = watch::channel(load()).0;
+    let cfg = load();
+    let port = cfg.port;
+    let cfg_tx = watch::channel(cfg).0;
     let (sb_tx, sb_rx) = mpsc::unbounded_channel();
     let (chat_tx, mut chat_rx) = mpsc::unbounded_channel();
     let (pear_tx, mut pear_rx) = mpsc::unbounded_channel();
+    let (api_tx, mut api_rx) = mpsc::unbounded_channel::<server::Command>();
+    let payload = watch::channel(Arc::<str>::from("")).0;
     // ponytail: one runtime thread is plenty for a few sockets, and lighter than one per core.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
+    let listener = match rt.block_on(server::bind(port)) {
+        Ok(l) => l,
+        Err(e) => {
+            say(e);
+            std::process::exit(1);
+        }
+    };
+    rt.spawn(server::run(listener, payload.subscribe(), cfg_tx.subscribe(), api_tx));
     rt.spawn(streamerbot::run(cfg_tx.subscribe(), sb_rx, chat_tx));
     rt.spawn(pear::run(cfg_tx.subscribe(), pear_tx));
     let mut app = App {
@@ -210,6 +497,11 @@ fn main() {
         sb: sb_tx,
         st: commands::State::default(),
         start: Instant::now(),
+        playing: false,
+        position: 0,
+        payload,
+        text: None,
+        cover: None,
     };
     rt.block_on(async {
         loop {
@@ -218,18 +510,29 @@ fn main() {
                     let who = commands::Who::twitch(c.role, c.subscribed);
                     app.chat("twitch", &c.user, who, &c.text).await;
                 }
-                Some(e) = pear_rx.recv() => match e {
-                    pear::Event::Song(t) => {
-                        // Pear repeats the same song now and then: only a new one counts.
-                        if t.as_ref().map(|t| &t.id) != app.st.current.as_ref().map(|c| &c.id) {
-                            if let Some(t) = &t {
-                                say(format!("pear: playing {} - {} ({})", t.artist, t.title, t.id));
+                Some((action, data, answer)) = api_rx.recv() => {
+                    let a = app.api(&action, &data).await;
+                    let _ = answer.send(a);
+                }
+                Some(e) = pear_rx.recv() => {
+                    match e {
+                        pear::Event::Song(t) => {
+                            // Pear repeats the same song now and then: only a new one counts.
+                            if t.as_ref().map(|t| &t.id) != app.st.current.as_ref().map(|c| &c.id) {
+                                if let Some(t) = &t {
+                                    say(format!("pear: playing {} - {} ({})", t.artist, t.title, t.id));
+                                }
+                                commands::song_changed(&mut app.st, t);
+                                app.position = 0;
                             }
-                            commands::song_changed(&mut app.st, t);
                         }
+                        pear::Event::State(playing, position) => (app.playing, app.position) = (playing, position),
+                        pear::Event::Position(position) => app.position = position,
+                        pear::Event::Token(t) => app.change(|c| c.pear_token = t),
                     }
-                    pear::Event::Token(t) => app.change(|c| c.pear_token = t),
-                },
+                    app.files().await;
+                    app.publish();
+                }
                 else => break,
             }
         }

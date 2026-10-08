@@ -41,6 +41,28 @@ How a reply is sent, per command:
   - `%platform%`: `twitch` (or `tiktok`), and the reply's placeholders as arguments too
     (`%user%`, `%title%`, `%artist%`, `%song%`, `%pos%`, `%votes%`, ...).
 
+## Overlays and Songify's API
+
+songrequestz answers Songify's local API on `http://127.0.0.1:65530/` (`port` in
+`songrequestz.json`, read at start), so Songify overlays and tools work unchanged:
+
+- `GET /`: the now-playing JSON (same shape as Songify's), `/ws/data`: the same, pushed on every
+  change. Songify's widgets (https://songify.rocks/widgets) need `?ws=65530` on their URL.
+- WebSocket commands on any other path, e.g. `{"action":"skip"}`: `queue_add` (`data.track`,
+  `data.requester`), `skip`/`next`, `play`, `pause`, `play_pause`, `vol_set` (`data.value`),
+  `vol_up`, `vol_down`, `send_to_chat`, `sr_enable`/`sr_open`, `sr_disable`/`sr_close`,
+  `block_artist`, `block_all_artists`, `block_song`, `block_user`. Answers start with
+  `Command executed: `.
+- `api_password`: off when empty. With one, pass it as `?password=`, header `X-Songify-Password`,
+  on each command (`"password"`), or once with `{"action":"auth","data":{"password":"..."}}`.
+
+Files, written only when they change, in `files_dir` (empty: next to the exe):
+
+- `Songify.txt`: `output` (default `{artist} - {title}`; Songify's placeholders, `{{...}}` only for
+  requests, e.g. `{artist} - {title} {{(requested by {req})}}`). While paused: `paused_text` if set
+  (`""` empties it).
+- `cover.png`: the song's cover (blank while paused when `paused_text` is set).
+
 ## Pear Desktop
 
 Install [Pear Desktop](https://github.com/pear-devs/pear-desktop) and turn on its **API Server**
