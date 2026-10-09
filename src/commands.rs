@@ -31,6 +31,18 @@ impl Who {
             _ => Who::Followers,
         }
     }
+
+    /// A TikTok chatter, from tikstream/TikFinity's flags (followRole: 0 none, 1 follower, 2 friend).
+    /// TikTok doesn't flag the streamer, so `host` is the configured account.
+    pub fn tiktok(host: bool, moderator: bool, subscriber: bool, follow_role: u8) -> Who {
+        match () {
+            _ if host => Who::Broadcaster,
+            _ if moderator => Who::Mods,
+            _ if subscriber => Who::Subs,
+            _ if follow_role > 0 => Who::Followers,
+            _ => Who::Everyone,
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -798,6 +810,10 @@ mod tests {
         assert_eq!(Who::twitch(4, false), Who::Broadcaster);
         assert_eq!(Who::twitch(1, true), Who::Subs);
         assert_eq!(Who::twitch(1, false), Who::Followers);
+        assert_eq!(Who::tiktok(true, false, false, 0), Who::Broadcaster);
+        assert_eq!(Who::tiktok(false, true, true, 1), Who::Mods);
+        assert_eq!(Who::tiktok(false, false, false, 2), Who::Followers);
+        assert_eq!(Who::tiktok(false, false, false, 0), Who::Everyone);
     }
 
     #[test]

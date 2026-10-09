@@ -5,6 +5,7 @@ mod commands;
 mod pear;
 mod server;
 mod streamerbot;
+mod tiktok;
 
 use commands::{Do, Query, Reply};
 use serde::{Deserialize, Serialize};
@@ -13,6 +14,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, watch};
+
+/// A chat message from Twitch (Streamer.bot) or TikTok (tikstream/TikFinity).
+pub struct Chat {
+    pub platform: &'static str,
+    pub user: String,
+    pub who: commands::Who,
+    pub text: String,
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -23,6 +32,13 @@ struct Config {
     /// (plus its parts). Empty: straight to chat (SendMessage), which needs Streamer.bot's WebSocket
     /// authentication on.
     reply_action: String,
+    /// tikstream/TikFinity's WebSocket for TikTok chat; empty: off.
+    tiktok_url: String,
+    /// Your TikTok @name: its messages count as the broadcaster's (TikTok doesn't flag them).
+    tiktok_user: String,
+    /// Streamer.bot action for TikTok results of commands without their own action (nothing goes
+    /// back to TikTok chat; the action decides: TTS, Twitch chat, nothing). Empty: only logged.
+    tiktok_action: String,
     /// Pear's API token, when its API Server asks for authorization (filled in by itself).
     pear_token: String,
     /// Songify's API port (read at start).
@@ -45,6 +61,9 @@ impl Default for Config {
             streamerbot_url: "ws://127.0.0.1:8080/".into(),
             streamerbot_password: String::new(),
             reply_action: String::new(),
+            tiktok_url: "ws://127.0.0.1:21213/".into(),
+            tiktok_user: String::new(),
+            tiktok_action: String::new(),
             pear_token: String::new(),
             port: 65530,
             api_password: String::new(),
@@ -113,15 +132,18 @@ struct App {
 }
 
 impl App {
-    /// Send a reply: the command's own action, else the default one, else straight to chat.
+    /// Send a reply: the command's own action, else the platform's default one, else straight to
+    /// Twitch chat (TikTok: nowhere).
     fn send(&self, platform: &str, r: Reply) {
         let cfg = self.cfg.borrow();
         let all = cfg.requests.commands.all();
         let own = all.iter().find(|(n, _)| *n == r.command).map_or("", |(_, c)| &c.action);
-        let action = if own.is_empty() { &cfg.reply_action } else { own };
-        say(format!("reply ({} {}): {}", r.command, r.result, r.text));
+        let tiktok = platform == "tiktok";
+        let default = if tiktok { &cfg.tiktok_action } else { &cfg.reply_action };
+        let action = if own.is_empty() { default } else { own };
+        say(format!("reply ({platform} {} {}): {}", r.command, r.result, r.text));
         // An empty template means no chat message; an action still runs.
-        if !r.text.is_empty() || !action.is_empty() {
+        if (!r.text.is_empty() && !tiktok) || !action.is_empty() {
             let _ = self.sb.send(streamerbot::chat_reply(&r, platform, action));
         }
     }
@@ -490,7 +512,8 @@ fn main() {
         }
     };
     rt.spawn(server::run(listener, payload.subscribe(), cfg_tx.subscribe(), api_tx));
-    rt.spawn(streamerbot::run(cfg_tx.subscribe(), sb_rx, chat_tx));
+    rt.spawn(streamerbot::run(cfg_tx.subscribe(), sb_rx, chat_tx.clone()));
+    rt.spawn(tiktok::run(cfg_tx.subscribe(), chat_tx));
     rt.spawn(pear::run(cfg_tx.subscribe(), pear_tx));
     let mut app = App {
         cfg: cfg_tx,
@@ -507,8 +530,7 @@ fn main() {
         loop {
             tokio::select! {
                 Some(c) = chat_rx.recv() => {
-                    let who = commands::Who::twitch(c.role, c.subscribed);
-                    app.chat("twitch", &c.user, who, &c.text).await;
+                    app.chat(c.platform, &c.user, c.who, &c.text).await;
                 }
                 Some((action, data, answer)) = api_rx.recv() => {
                     let a = app.api(&action, &data).await;

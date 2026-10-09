@@ -105,7 +105,7 @@ default chat commands. Close Songify first (same port).
 | `src/tiktok.rs` | tikstream/TikFinity client |
 | `src/server.rs` | port 65530: JSON, `/ws/data`, WS commands, files |
 | `src/ui.rs` / `src/tray.rs` | from tikstream: tabs Status, Queue, Commands, Settings, Log |
-| `dev/` | `sbmock.py` (tikstream's + fake Twitch chat events + prints SendMessage), `tikmock.py` (fake :21213 chat) |
+| `dev/` | `sbmock.py` (tikstream's + fake Twitch chat events + prints SendMessage); TikTok: tikstream's dev mode |
 
 Dependencies: tikstream's minus TikTok/wry/tao/sha2-only-if-needed; add a tiny HTTP client only if
 needed. Plain HTTP to Pear can be hand-written over `tokio::net::TcpStream`; Spotify needs TLS,
@@ -136,7 +136,11 @@ pick the smallest option (e.g. `ureq` with rustls on a blocking task vs `reqwest
       links need `?ws=65530` (their default is 22345; Songify's gallery adds it). Chrome asks to allow
       local network access for widgets loaded from songify.rocks (same as with Songify). `Tracks` =
       the requests (not Pear's whole queue). Payload pushed every second while playing (position).
-- [ ] 5. TikTok: client, SB result action. tikstream port-config PR.
+- [x] 5. TikTok: client, SB result action. (tikstream port-config PR: still to do, after tikstream's
+      open PR #2 is merged, since one PR at a time.)
+      Tested on a real live through tikstream. TikTok doesn't flag the streamer, so `tiktok_user`
+      (their @name) counts as broadcaster. Results run the command's own action, else `tiktok_action`
+      (none: only logged). `user` is the sender's @name (`uniqueId`), what TikTok mentions use.
 - [ ] 6. UI + tray + autostart, polish; measure RSS/CPU. Bring back tikstream's FLTK bits
       in CI (apt packages in `lint.yml`, static C runtime step in `build.yml`), icon + `build.rs`.
 - [ ] 7. Spotify: PKCE, read-only now playing; Premium writes behind API errors.
@@ -145,5 +149,5 @@ pick the smallest option (e.g. `ureq` with rustls on a blocking task vs `reqwest
 - Real Streamer.bot is running locally (Wine, `ws://127.0.0.1:8080/`): use it for phase 1 and keep
   checking with it. `dev/sbmock.py` for CI-free repeatable runs.
 - Pear Desktop has a Linux build: install it, enable API Server, test for real.
-- TikTok: run tikstream with `TIKSTREAM_DEV=1` + `uv run dev/fake.py chat "!ssr never gonna"`, or `dev/tikmock.py`.
+- TikTok: run tikstream with `TIKSTREAM_DEV=1` + `uv run dev/fake.py chat "!ssr never gonna"` (tikstream's).
 - Overlays: any existing Songify overlay pointed at `http://127.0.0.1:65530/` must work unchanged.
