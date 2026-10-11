@@ -52,6 +52,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
+      - run: |
+          cargo fetch --locked
+          # FLTK's CMake defaults to the DLL C runtime, overriding fltk-sys's static one
+          # (.cargo/config.toml): without this the link fails.
+          f=$(ls "${CARGO_HOME:-$HOME/.cargo}"/registry/src/*/fltk-sys-*/cfltk/fltk/CMake/options.cmake)
+          perl -pi -e 's/(option\(FLTK_MSVC_RUNTIME_DLL .*)ON\)/${1}OFF)/' $f
+          grep -q 'FLTK_MSVC_RUNTIME_DLL .*OFF)' $f
       - run: cargo build --release --locked --bin songrequestz
         env:
           SONGREQUESTZ_VERSION: ${{ needs.version.outputs.tag || 'dev' }}

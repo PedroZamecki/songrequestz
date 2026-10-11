@@ -2,7 +2,7 @@
 //! WebSocket for song changes (push, no polling). Spotify links become a Pear search here too.
 
 use crate::commands::Track;
-use crate::{say, Config};
+use crate::{say, status, Config};
 use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -533,6 +533,7 @@ pub async fn run(mut cfg: watch::Receiver<Config>, tx: mpsc::UnboundedSender<Eve
         let mut unauthorized = false;
         match tokio_tungstenite::connect_async(format!("ws://{HOST}/api/v1/ws{q}")).await {
             Ok((mut ws, _)) => {
+                status(|s| s.pear = "connected".into());
                 loop {
                     tokio::select! {
                         m = ws.next() => match m {
@@ -553,6 +554,7 @@ pub async fn run(mut cfg: watch::Receiver<Config>, tx: mpsc::UnboundedSender<Eve
                 }
                 if !unauthorized {
                     say("pear: disconnected".into());
+                    status(|s| s.pear = "disconnected".into());
                     was_up = true;
                     let _ = tx.send(Event::Song(None));
                 }
@@ -560,12 +562,14 @@ pub async fn run(mut cfg: watch::Receiver<Config>, tx: mpsc::UnboundedSender<Eve
             Err(_) => {
                 if was_up {
                     say(format!("pear: {DOWN}, retrying every 5s"));
+                    status(|s| s.pear = "not running? (needs its API Server plugin on)".into());
                 }
                 was_up = false;
             }
         }
         if unauthorized {
             say("pear: asking Pear to authorize songrequestz: click Allow in Pear".into());
+            status(|s| s.pear = "click Allow in Pear".into());
             match http("POST", "/auth/songrequestz", None, "").await {
                 Ok(body) => {
                     let v: Value = serde_json::from_str(&body).unwrap_or_default();
@@ -576,8 +580,12 @@ pub async fn run(mut cfg: watch::Receiver<Config>, tx: mpsc::UnboundedSender<Eve
                         continue;
                     }
                     say("pear: Pear didn't give a token".into());
+                    status(|s| s.pear = "not authorized (restart to ask again)".into());
                 }
-                Err(e) => say(format!("pear: {e}")),
+                Err(e) => {
+                    say(format!("pear: {e}"));
+                    status(|s| s.pear = "not authorized (restart to ask again)".into());
+                }
             }
             // Denied or no answer: don't ask again until the token changes (or a restart).
             changed(&mut cfg, &token).await;

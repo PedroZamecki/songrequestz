@@ -141,8 +141,13 @@ pick the smallest option (e.g. `ureq` with rustls on a blocking task vs `reqwest
       Tested on a real live through tikstream. TikTok doesn't flag the streamer, so `tiktok_user`
       (their @name) counts as broadcaster. Results run the command's own action, else `tiktok_action`
       (none: only logged). `user` is the sender's @name (`uniqueId`), what TikTok mentions use.
-- [ ] 6. UI + tray + autostart, polish; measure RSS/CPU. Bring back tikstream's FLTK bits
+- [x] 6. UI + tray + autostart, polish; measure RSS/CPU. Bring back tikstream's FLTK bits
       in CI (apt packages in `lint.yml`, static C runtime step in `build.yml`), icon + `build.rs`.
+      Tabs Status, Queue (play/pause, skip, remove: the window uses the API command channel, plus
+      a `queue_remove` action), Commands (all 14 and every reply), Settings, Log. Action fields
+      are typed or picked from Streamer.bot's `GetActions` (asked on connect). Chat and API
+      changes (open, blocklists) show in the window. Linux, hidden: 11.5 MB RSS but 4.3 MB PSS
+      (the rest is shared system libraries), ~2 ticks/min; it was 3.5 MB without the UI.
 - [ ] 7. Spotify: PKCE, read-only now playing; Premium writes behind API errors.
 
 ## Testing

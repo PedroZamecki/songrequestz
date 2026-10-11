@@ -2,7 +2,7 @@
 //! main.rs like Twitch chat; every other event is ignored. Nothing is ever sent back to TikTok.
 
 use crate::commands::Who;
-use crate::{say, Chat, Config};
+use crate::{say, status, Chat, Config};
 use futures_util::StreamExt;
 use serde::Deserialize;
 use std::time::Duration;
@@ -53,12 +53,14 @@ pub async fn run(mut cfg: watch::Receiver<Config>, chat: mpsc::UnboundedSender<C
         let url = cfg.borrow_and_update().tiktok_url.trim().to_string();
         if url.is_empty() {
             say("tiktok: off".into());
+            status(|s| s.tiktok = "off".into());
             moved(&mut cfg, &url).await;
             continue;
         }
         match tokio_tungstenite::connect_async(url.as_str()).await {
             Ok((mut ws, _)) => {
                 say(format!("tiktok: connected to {url}"));
+                status(|s| s.tiktok = format!("connected ({url})"));
                 was_up = true;
                 loop {
                     tokio::select! {
@@ -75,10 +77,12 @@ pub async fn run(mut cfg: watch::Receiver<Config>, chat: mpsc::UnboundedSender<C
                     }
                 }
                 say("tiktok: disconnected".into());
+                status(|s| s.tiktok = "disconnected".into());
             }
             Err(e) => {
                 if was_up {
                     say(format!("tiktok: can't connect to {url} ({e}), retrying every 5s"));
+                    status(|s| s.tiktok = format!("tikstream/TikFinity not running? ({url})"));
                 }
                 was_up = false;
             }
