@@ -1,8 +1,8 @@
 # songrequestz
 
 Tiny Songify replacement (one small exe, nothing running while idle): song requests from Twitch chat
-(through Streamer.bot) and TikTok chat (through tikstream/TikFinity) for **Pear Desktop** and
-**Spotify**. Drop-in for Songify: same port (65530), JSON, WebSocket commands, `Songify.txt`,
+(through Streamer.bot) and TikTok chat (through tikstream/TikFinity) for **Pear Desktop**, and now
+playing from the **Spotify** app. Drop-in for Songify: same port (65530), JSON, WebSocket commands, `Songify.txt`,
 `cover.png` and default chat commands. Close Songify first.
 
 Work in progress: see `PLAN.md`.
@@ -127,3 +127,15 @@ empty text sends nothing to chat (the action still runs).
 Limits in `requests`: `open`, `max_queue` and `max_per_user` (0: no limit), `max_minutes` (song
 length), `cooldown_s` (between one user's requests), `votes_needed`, and `blocked_users`,
 `blocked_artists`, `blocked_songs` (case doesn't matter).
+
+## Spotify
+
+Pick **Spotify app** under Settings → Player to follow the Spotify desktop app instead of Pear.
+It needs no account setup and works on Spotify Free: now playing (overlays, `Songify.txt`,
+`cover.png`, `!song`), play/pause and skip. Song requests and volume can't work this way: nothing
+on the computer can add a song to Spotify's queue, so `!ssr` answers that requests need Pear.
+On Windows the song is read from Spotify's window title, so there's no cover or song length.
+
+Spotify's Web API could queue songs, but since March 2026 it only works when the developer app's
+owner has Spotify Premium (and controlling playback needs the listener's Premium too); that's a
+later phase.

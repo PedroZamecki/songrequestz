@@ -5,6 +5,7 @@
 mod commands;
 mod pear;
 mod server;
+mod spotify;
 mod streamerbot;
 mod tiktok;
 mod tray;
@@ -27,9 +28,19 @@ pub struct Chat {
     pub text: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Player {
+    #[default]
+    Pear,
+    /// The Spotify desktop app (no song requests).
+    Spotify,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct Config {
+    player: Player,
     streamerbot_url: String,
     streamerbot_password: String,
     /// Streamer.bot action for replies of commands without their own: gets the text as `message`
@@ -65,6 +76,7 @@ struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            player: Player::Pear,
             streamerbot_url: "ws://127.0.0.1:8080/".into(),
             streamerbot_password: String::new(),
             reply_action: String::new(),
@@ -89,7 +101,7 @@ impl Default for Config {
 struct Status {
     sb: String,
     tiktok: String,
-    pear: String,
+    player: String,
     /// Streamer.bot's action names, once it sent them; bumps `actions_rev` on change.
     actions: Vec<String>,
     actions_rev: u64,
@@ -107,7 +119,7 @@ const LOG_LINES: usize = 200;
 static STATUS: Mutex<Status> = Mutex::new(Status {
     sb: String::new(),
     tiktok: String::new(),
-    pear: String::new(),
+    player: String::new(),
     actions: Vec::new(),
     actions_rev: 0,
     now: String::new(),
@@ -141,8 +153,8 @@ fn summary() -> String {
     status(|s| {
         let now = if s.now.is_empty() { "nothing" } else { &s.now };
         t = format!(
-            "songrequestz\n{now}\nStreamer.bot: {}\nTikTok: {}\nPear: {}",
-            s.sb, s.tiktok, s.pear
+            "songrequestz\n{now}\nStreamer.bot: {}\nTikTok: {}\nPlayer: {}",
+            s.sb, s.tiktok, s.player
         );
     });
     t
@@ -275,6 +287,28 @@ impl App {
         }
     }
 
+    fn spotify(&self) -> bool {
+        self.cfg.borrow().player == Player::Spotify
+    }
+
+    /// "next", "play" or "pause" on the selected player.
+    async fn control(&self, what: &str) -> Result<(), String> {
+        if self.spotify() {
+            return spotify::player(what).await;
+        }
+        let token = self.cfg.borrow().pear_token.clone();
+        pear::player(&token, what).await
+    }
+
+    /// Read (None) or set the volume, 0-100.
+    async fn volume(&self, set: Option<u8>) -> Result<u8, String> {
+        if self.spotify() {
+            return Err("the Spotify app's volume can't be read or set from here".into());
+        }
+        let token = self.cfg.borrow().pear_token.clone();
+        pear::volume(&token, set).await
+    }
+
     fn change(&self, f: impl FnOnce(&mut Config)) {
         self.cfg.send_modify(f);
         let _ = save(&self.cfg.borrow());
@@ -296,7 +330,7 @@ impl App {
         }
         let token = self.cfg.borrow().pear_token.clone();
         let failed = |app: &Self, command, e: String| {
-            say(format!("pear: {command} failed: {e}"));
+            say(format!("player: {command} failed: {e}"));
             commands::player_error(&app.cfg.borrow().requests, command, user, &e)
         };
         for d in out {
@@ -315,19 +349,20 @@ impl App {
                         "pause" => "pause",
                         _ => "next",
                     };
-                    let r = match pear::player(&token, what).await {
+                    let r = match self.control(what).await {
                         Ok(()) => r,
                         Err(e) => failed(self, r.command, e),
                     };
                     self.send(platform, r);
                 }
                 Do::Volume(set) => {
-                    let r = match pear::volume(&token, set).await {
+                    let r = match self.volume(set).await {
                         Ok(v) => commands::vol_reply(&self.cfg.borrow().requests, user, v),
                         Err(e) => failed(self, "vol", e),
                     };
                     self.send(platform, r);
                 }
+                Do::Removed(q) if self.spotify() => drop(q),
                 Do::Removed(q) => {
                     if let Err(e) = pear::remove(&token, &q.track.id).await {
                         say(format!("pear: couldn't take {} off its queue: {e}", q.track.id));
@@ -347,6 +382,9 @@ impl App {
         token: &str,
         now: u64,
     ) -> Result<Reply, String> {
+        if self.spotify() {
+            return Err(spotify::NO_REQUESTS.into());
+        }
         let (found, asked) = match q {
             Query::Video(id) => (pear::video(token, &id).await?, id),
             Query::Text(t) => (pear::search(token, &t).await?, t),
@@ -401,7 +439,8 @@ impl App {
                     },
                 }
             }
-            "skip" | "next" => pear::player(&token, "next")
+            "skip" | "next" => self
+                .control("next")
                 .await
                 .map_or_else(|e| e, |_| "Song skipped.".into()),
             "play" | "pause" | "play_pause" => {
@@ -411,8 +450,8 @@ impl App {
                 } else {
                     ("play", "Playback resumed.")
                 };
-                match pear::player(&token, what).await {
-                    // Pear says so too, but maybe not before the next command.
+                match self.control(what).await {
+                    // The player says so too, but maybe not before the next command.
                     Ok(()) => {
                         self.playing = !pause;
                         done.into()
@@ -425,12 +464,13 @@ impl App {
                     "vol_set" => Ok(data["value"].as_f64().unwrap_or(0.0)),
                     // ponytail: Pear reads a new volume back ~0.3 s late, so a step right after a set
                     // starts from the old one.
-                    _ => pear::volume(&token, None)
+                    _ => self
+                        .volume(None)
                         .await
                         .map(|v| v as f64 + if action == "vol_up" { 5.0 } else { -5.0 }),
                 };
                 match set {
-                    Ok(v) => match pear::volume(&token, Some(v.clamp(0.0, 100.0) as u8)).await {
+                    Ok(v) => match self.volume(Some(v.clamp(0.0, 100.0) as u8)).await {
                         Ok(v) => format!("Volume set to {v}%"),
                         Err(e) => e,
                     },
@@ -475,7 +515,7 @@ impl App {
             "block_song" => match &current {
                 Some(t) => {
                     self.change(|c| c.requests.blocked_songs.push(t.id.clone()));
-                    let _ = pear::player(&token, "next").await;
+                    let _ = self.control("next").await;
                     "Song blocked.".into()
                 }
                 None => "Nothing is playing.".into(),
@@ -670,7 +710,8 @@ fn main() {
     ));
     rt.spawn(streamerbot::run(cfg_tx.subscribe(), sb_rx, chat_tx.clone()));
     rt.spawn(tiktok::run(cfg_tx.subscribe(), chat_tx));
-    rt.spawn(pear::run(cfg_tx.subscribe(), pear_tx));
+    rt.spawn(pear::run(cfg_tx.subscribe(), pear_tx.clone()));
+    rt.spawn(spotify::run(cfg_tx.subscribe(), pear_tx));
     let (ui_tx, ui_rx) = fltk::app::channel();
     rt.spawn(tray::run(ui_tx));
     let mut a = App {
@@ -704,7 +745,7 @@ fn main() {
                             // Pear repeats the same song now and then: only a new one counts.
                             if t.as_ref().map(|t| &t.id) != app.st.current.as_ref().map(|c| &c.id) {
                                 if let Some(t) = &t {
-                                    say(format!("pear: playing {} - {} ({})", t.artist, t.title, t.id));
+                                    say(format!("playing {} - {} ({})", t.artist, t.title, t.id));
                                 }
                                 commands::song_changed(&mut app.st, t);
                                 app.position = 0;

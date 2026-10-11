@@ -13,7 +13,7 @@ default chat commands. Close Songify first (same port).
 |---|---|
 | Twitch | Subscribe to Streamer.bot's Twitch chat events over its WebSocket; handle commands here; reply with Streamer.bot `SendMessage`. No Twitch login, no SB C# actions needed. |
 | TikTok | Connect as a client to tikstream/TikFinity `ws://127.0.0.1:<port>/` (port configurable, default 21213), treat `chat` events like Twitch chat. songrequestz never replies on TikTok: it runs one configurable SB action with the result and SB decides (TTS, Twitch chat, nothing). |
-| Players | Pear first (full control, no account). Spotify read-only until Premium (now playing, overlay, files); write calls answer "Spotify needs Premium" when the API refuses. |
+| Players | Pear first (full control, no account). Spotify: the desktop app, no Web API (Spotify's API needs the dashboard app's owner to have Premium since 2026-03-09): now playing, overlay, files, play/pause/skip; no requests (no local interface queues a song). Web API later, for whoever has Premium. |
 | Spotify links on Pear | Convert: title/artist from the start of the track's public web page (`<title>`; oEmbed has no artist), fetched with the OS's `curl` (Windows 10+ has it) so the exe carries no TLS; search Pear, queue top hit. YouTube links/IDs go straight in. |
 | Commands | Songify defaults, each renamable, enable/disable, own permission (everyone, followers, subs, vips, mods, broadcaster), own optional SB action: `!ssr !song !next !skip !voteskip !remove !pos !queue !vol !play !pause !cmds !togglesr !bansong`. All enabled by default (Songify ships them off). Defaults: everyone requests; mods (and broadcaster) skip/remove any/play/pause/vol/togglesr/bansong; viewers remove only their own. Followers only on TikTok (SB's Twitch chat has no follow info; Twitch's followers-only chat covers it). |
 | Replies | Every command always answers (errors, empty queue, nothing playing, no permission, disabled...). Every reply is an editable template with Songify's `{placeholders}` (`{user} {cmd} {title} {artist} {single_artist} {song} {req} {pos} {url} {votes} {vol}`..., `{{...}}` only for requests), so Songify texts paste in unchanged. Empty template = no chat message. |
@@ -36,7 +36,19 @@ default chat commands. Close Songify first (same port).
 - Push, no polling: `ws://127.0.0.1:26538/api/v1/ws?token=<token>`, messages `{"type": ...}`:
   `VIDEO_CHANGED` (new song), `PLAYER_STATE_CHANGED` (play/pause), `POSITION_CHANGED` (ignore unless needed).
 
-### Spotify (Web API, PKCE, user's own dashboard app)
+### Spotify desktop app (no account, no Premium)
+- Linux: MPRIS on D-Bus (`org.mpris.MediaPlayer2.spotify`): `GetAll` for Metadata (`mpris:trackid`
+  `/com/spotify/track/<id>`, ads `/com/spotify/ad/...`), PlaybackStatus, Position; woken by its
+  signals (PropertiesChanged, Seeked, NameOwnerChanged for start/quit), position counted once a
+  second only while playing. `Next`, `Play`, `Pause`. zbus is already in for the tray.
+- Windows: Spotify.exe's Chromium window title, "Artist - Title" while playing ("Spotify",
+  "Spotify Free/Premium" paused or idle; no cover, length or id), polled every second like Songify
+  does; `WM_APPCOMMAND` media keys (next, play, pause) work on Free.
+- Volume and requests answer that the Spotify app can't do them.
+
+### Spotify Web API (later: needs Premium; PKCE, user's own dashboard app)
+- Since 2026-03-09 every Development Mode app needs its owner to have Premium (all calls, reads too),
+  5 allowlisted users; player writes need the listener's Premium too. Extended quota: companies only.
 - User pastes their Client ID in Settings. Redirect URI `http://127.0.0.1:4002/auth` (loopback IP, not
   `localhost`; same as Songify). PKCE in the browser, tiny one-shot listener on 4002, refresh token saved.
 - Scopes, minimal: `user-read-currently-playing user-read-playback-state user-modify-playback-state`.
@@ -99,8 +111,7 @@ default chat commands. Close Songify first (same port).
 |---|---|
 | `src/main.rs` | config (`songrequestz.json` next to the exe), shared status, wiring, single-thread tokio |
 | `src/commands.rs` | chat → command, permissions, limits, queue, reply templates. Pure, unit-tested |
-| `src/player.rs` | `enum Player { Pear, Spotify }` with the few calls both need (no trait) |
-| `src/pear.rs` / `src/spotify.rs` | the two backends |
+| `src/pear.rs` / `src/spotify.rs` | the two players; main.rs picks with `Player` (`control`, `volume`) |
 | `src/streamerbot.rs` | from tikstream + Subscribe + SendMessage |
 | `src/tiktok.rs` | tikstream/TikFinity client |
 | `src/server.rs` | port 65530: JSON, `/ws/data`, WS commands, files |
@@ -148,7 +159,12 @@ pick the smallest option (e.g. `ureq` with rustls on a blocking task vs `reqwest
       are typed or picked from Streamer.bot's `GetActions` (asked on connect). Chat and API
       changes (open, blocklists) show in the window. Linux, hidden: 11.5 MB RSS but 4.3 MB PSS
       (the rest is shared system libraries), ~2 ticks/min; it was 3.5 MB without the UI.
-- [ ] 7. Spotify: PKCE, read-only now playing; Premium writes behind API errors.
+- [x] 7. Spotify desktop app as a player (no Web API: it needs Premium, see above). Checked on Linux
+      with a Free account: now playing, cover, progress, play/pause/skip, quit and restart, switching
+      players at runtime; requests and volume answer why not. Windows: type-checked only.
+      Known: after its player goes away, the overlay JSON keeps the last song (also with Pear).
+- [ ] 8. Spotify Web API, when someone with Premium can test it: PKCE, requests into Spotify's queue,
+      skip removed requests when they come up.
 
 ## Testing
 - Real Streamer.bot is running locally (Wine, `ws://127.0.0.1:8080/`): use it for phase 1 and keep

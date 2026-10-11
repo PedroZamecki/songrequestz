@@ -2,7 +2,7 @@
 //! Lives hidden in the tray; while hidden its native window is destroyed and nothing redraws.
 
 use crate::commands::{Command, Commands, Replies, Who};
-use crate::{server, status, Config};
+use crate::{server, status, Config, Player};
 use fltk::browser::HoldBrowser;
 use fltk::button::{Button, CheckButton};
 use fltk::enums::{Align, ColorDepth, Event, Font, Shortcut};
@@ -304,7 +304,26 @@ pub fn run(
     scroll.end();
 
     // Settings
-    let (scroll, mut col) = long_tab(&tabs, "Settings", 31 * (ROW + 4) + 3 * 3 * ROW);
+    let (scroll, mut col) = long_tab(&tabs, "Settings", 33 * (ROW + 4) + 3 * 3 * ROW);
+    text(&mut col, "Player", true);
+    let player = {
+        let mut row = Flex::default().row();
+        let l = Frame::default()
+            .with_label("Music player")
+            .with_align(Align::Left | Align::Inside);
+        let mut ch = Choice::default();
+        set_items(
+            &mut ch,
+            ["Pear Desktop", "Spotify app (no song requests)"].map(String::from),
+        );
+        ch.set_value((c.player == Player::Spotify) as i32);
+        ch.set_tooltip("Spotify: now playing, play/pause and skip from the desktop app, without its Web API (Premium)");
+        row.end();
+        row.fixed(&l, 170);
+        row.fixed(&ch, 260);
+        col.fixed(&row, ROW);
+        ch
+    };
     text(&mut col, "Streamer.bot", true);
     let sb_url: Input = field(&mut col, "WebSocket URL", &c.streamerbot_url, "Empty: off");
     let sb_password: SecretInput = field(
@@ -506,6 +525,11 @@ pub fn run(
                 .map(|(k, i)| (k.clone(), json!(i.value())))
                 .collect();
             cfg.send_modify(|c| {
+                c.player = if player.value() == 1 {
+                    Player::Spotify
+                } else {
+                    Player::Pear
+                };
                 c.streamerbot_url = sb_url.value().trim().into();
                 c.streamerbot_password = sb_password.value();
                 c.reply_action = reply_action.value().unwrap_or_default().trim().into();
@@ -598,11 +622,11 @@ pub fn run(
                     let or = |v: &str| if v.is_empty() { "starting..." } else { v }.to_string();
                     let playing = if s.now.is_empty() { "nothing" } else { &s.now };
                     text = format!(
-                        "Now playing: {playing}\nRequests: {}\nStreamer.bot: {}\nTikTok: {}\nPear Desktop: {}",
+                        "Now playing: {playing}\nRequests: {}\nStreamer.bot: {}\nTikTok: {}\nPlayer: {}",
                         s.queue.len(),
                         or(&s.sb),
                         or(&s.tiktok),
-                        or(&s.pear)
+                        or(&s.player)
                     );
                     if s.queue_rev != seen_queue {
                         seen_queue = s.queue_rev;
