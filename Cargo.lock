@@ -986,6 +986,7 @@ dependencies = [
  "tokio-tungstenite",
  "tray-icon",
  "windows-sys",
+ "zbus",
 ]
 
 [[package]]

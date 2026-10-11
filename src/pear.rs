@@ -2,7 +2,7 @@
 //! WebSocket for song changes (push, no polling). Spotify links become a Pear search here too.
 
 use crate::commands::Track;
-use crate::{say, status, Config};
+use crate::{say, status, Config, Player};
 use futures_util::StreamExt;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -524,6 +524,11 @@ fn spotify_title(page: &str) -> Option<String> {
 pub async fn run(mut cfg: watch::Receiver<Config>, tx: mpsc::UnboundedSender<Event>) {
     let mut was_up = true;
     loop {
+        if cfg.borrow_and_update().player != Player::Pear {
+            let _ = cfg.wait_for(|c| c.player == Player::Pear).await;
+            was_up = true;
+            continue;
+        }
         let token = cfg.borrow_and_update().pear_token.clone();
         let q = if token.is_empty() {
             String::new()
@@ -533,7 +538,7 @@ pub async fn run(mut cfg: watch::Receiver<Config>, tx: mpsc::UnboundedSender<Eve
         let mut unauthorized = false;
         match tokio_tungstenite::connect_async(format!("ws://{HOST}/api/v1/ws{q}")).await {
             Ok((mut ws, _)) => {
-                status(|s| s.pear = "connected".into());
+                status(|s| s.player = "connected".into());
                 loop {
                     tokio::select! {
                         m = ws.next() => match m {
@@ -554,7 +559,7 @@ pub async fn run(mut cfg: watch::Receiver<Config>, tx: mpsc::UnboundedSender<Eve
                 }
                 if !unauthorized {
                     say("pear: disconnected".into());
-                    status(|s| s.pear = "disconnected".into());
+                    status(|s| s.player = "disconnected".into());
                     was_up = true;
                     let _ = tx.send(Event::Song(None));
                 }
@@ -562,14 +567,14 @@ pub async fn run(mut cfg: watch::Receiver<Config>, tx: mpsc::UnboundedSender<Eve
             Err(_) => {
                 if was_up {
                     say(format!("pear: {DOWN}, retrying every 5s"));
-                    status(|s| s.pear = "not running? (needs its API Server plugin on)".into());
+                    status(|s| s.player = "not running? (needs its API Server plugin on)".into());
                 }
                 was_up = false;
             }
         }
         if unauthorized {
             say("pear: asking Pear to authorize songrequestz: click Allow in Pear".into());
-            status(|s| s.pear = "click Allow in Pear".into());
+            status(|s| s.player = "click Allow in Pear".into());
             match http("POST", "/auth/songrequestz", None, "").await {
                 Ok(body) => {
                     let v: Value = serde_json::from_str(&body).unwrap_or_default();
@@ -580,11 +585,11 @@ pub async fn run(mut cfg: watch::Receiver<Config>, tx: mpsc::UnboundedSender<Eve
                         continue;
                     }
                     say("pear: Pear didn't give a token".into());
-                    status(|s| s.pear = "not authorized (restart to ask again)".into());
+                    status(|s| s.player = "not authorized (restart to ask again)".into());
                 }
                 Err(e) => {
                     say(format!("pear: {e}"));
-                    status(|s| s.pear = "not authorized (restart to ask again)".into());
+                    status(|s| s.player = "not authorized (restart to ask again)".into());
                 }
             }
             // Denied or no answer: don't ask again until the token changes (or a restart).
@@ -599,9 +604,12 @@ pub async fn run(mut cfg: watch::Receiver<Config>, tx: mpsc::UnboundedSender<Eve
     }
 }
 
-/// Wait for a new Pear token. Returns () so wait_for's read guard isn't held across awaits.
+/// Wait for a new Pear token or another player. Returns () so wait_for's read guard isn't held
+/// across awaits.
 async fn changed(cfg: &mut watch::Receiver<Config>, token: &str) {
-    let _ = cfg.wait_for(|c| c.pear_token != token).await;
+    let _ = cfg
+        .wait_for(|c| c.pear_token != token || c.player != Player::Pear)
+        .await;
 }
 
 /// The song in a PLAYER_INFO / VIDEO_CHANGED message (same shape as GET song-info).
