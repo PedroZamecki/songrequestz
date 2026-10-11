@@ -1,3 +1,4 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! Tiny Songify replacement: song requests for Pear Desktop and Spotify, from Twitch chat (through
 //! Streamer.bot) and TikTok chat (through tikstream/TikFinity). See PLAN.md.
 
@@ -6,12 +7,15 @@ mod pear;
 mod server;
 mod streamerbot;
 mod tiktok;
+mod tray;
+mod ui;
 
 use commands::{Do, Query, Reply};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::{mpsc, watch};
 
@@ -53,6 +57,9 @@ struct Config {
     /// Empty or text also blanks cover.png.
     paused_text: Option<String>,
     requests: commands::Requests,
+    dark: bool,
+    start_hidden: bool,
+    autostart: bool,
 }
 
 impl Default for Config {
@@ -71,12 +78,74 @@ impl Default for Config {
             output: "{artist} - {title}".into(),
             paused_text: None,
             requests: commands::Requests::default(),
+            dark: true,
+            start_hidden: true,
+            autostart: false,
         }
     }
 }
 
+/// What the window and tray show. Shared by all tasks.
+struct Status {
+    sb: String,
+    tiktok: String,
+    pear: String,
+    /// Streamer.bot's action names, once it sent them; bumps `actions_rev` on change.
+    actions: Vec<String>,
+    actions_rev: u64,
+    /// Now playing and the requests, one line each; bumps `queue_rev` on change.
+    now: String,
+    queue: Vec<String>,
+    queue_rev: u64,
+    /// Last LOG_LINES log lines, and how many were ever logged (so the window knows what's new).
+    log: VecDeque<String>,
+    logged: u64,
+}
+
+const LOG_LINES: usize = 200;
+
+static STATUS: Mutex<Status> = Mutex::new(Status {
+    sb: String::new(),
+    tiktok: String::new(),
+    pear: String::new(),
+    actions: Vec::new(),
+    actions_rev: 0,
+    now: String::new(),
+    queue: Vec::new(),
+    queue_rev: 0,
+    log: VecDeque::new(),
+    logged: 0,
+});
+
+fn status(f: impl FnOnce(&mut Status)) {
+    if let Ok(mut s) = STATUS.lock() {
+        f(&mut s);
+    }
+}
+
+/// Print and keep for the window's log.
 fn say(line: String) {
     println!("{line}");
+    status(|s| {
+        if s.log.len() == LOG_LINES {
+            s.log.pop_front();
+        }
+        s.log.push_back(line);
+        s.logged += 1;
+    });
+}
+
+/// The tray tooltip.
+fn summary() -> String {
+    let mut t = String::new();
+    status(|s| {
+        let now = if s.now.is_empty() { "nothing" } else { &s.now };
+        t = format!(
+            "songrequestz\n{now}\nStreamer.bot: {}\nTikTok: {}\nPear: {}",
+            s.sb, s.tiktok, s.pear
+        );
+    });
+    t
 }
 
 fn config_path() -> PathBuf {
@@ -85,14 +154,72 @@ fn config_path() -> PathBuf {
         .map_or_else(|| "songrequestz.json".into(), |d| d.join("songrequestz.json"))
 }
 
-fn save(c: &Config) {
-    if let Err(e) = std::fs::write(config_path(), serde_json::to_string_pretty(c).unwrap_or_default()) {
+fn save(c: &Config) -> std::io::Result<()> {
+    let r = std::fs::write(config_path(), serde_json::to_string_pretty(c).unwrap_or_default());
+    if let Err(e) = &r {
         say(format!("can't save songrequestz.json ({e})"));
+    }
+    r
+}
+
+/// Start with Windows: a value under the user's Run registry key.
+#[cfg(windows)]
+fn autostart(on: bool) -> std::io::Result<()> {
+    use windows_sys::Win32::System::Registry::{RegDeleteKeyValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
+    let w = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
+    let (key, name) = (w(r"Software\Microsoft\Windows\CurrentVersion\Run"), w("songrequestz"));
+    let exe = w(&format!("\"{}\"", std::env::current_exe()?.display()));
+    // SAFETY: NUL-terminated UTF-16 strings that outlive the calls; size is in bytes.
+    let err = unsafe {
+        if on {
+            let size = (exe.len() * 2) as u32;
+            RegSetKeyValueW(
+                HKEY_CURRENT_USER,
+                key.as_ptr(),
+                name.as_ptr(),
+                REG_SZ,
+                exe.as_ptr().cast(),
+                size,
+            )
+        } else {
+            RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr())
+        }
+    };
+    // 2 = not found: already off.
+    match err {
+        0 | 2 => Ok(()),
+        e => Err(std::io::Error::from_raw_os_error(e as i32)),
     }
 }
 
-/// The config, or the defaults. Written back, so new settings show up in the file to edit (until the
-/// window exists); an invalid file is left alone.
+/// Start at login: an XDG autostart entry.
+#[cfg(not(windows))]
+fn autostart(on: bool) -> std::io::Result<()> {
+    use std::io::ErrorKind::NotFound;
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .ok_or(NotFound)?;
+    let file = config.join("autostart/songrequestz.desktop");
+    if !on {
+        return match std::fs::remove_file(file) {
+            Err(e) if e.kind() == NotFound => Ok(()),
+            r => r,
+        };
+    }
+    std::fs::create_dir_all(config.join("autostart"))?;
+    let exe = std::env::current_exe()?;
+    std::fs::write(
+        file,
+        format!(
+            "[Desktop Entry]\nType=Application\nName=songrequestz\nExec=\"{}\"\n",
+            exe.display()
+        ),
+    )
+}
+
+/// The config, or the defaults. Written back, so new settings show up in the file; an invalid file
+/// is left alone.
 fn load() -> Config {
     let c = match std::fs::read_to_string(config_path()) {
         Ok(s) => match serde_json::from_str(&s) {
@@ -104,7 +231,7 @@ fn load() -> Config {
         },
         Err(_) => Config::default(),
     };
-    save(&c);
+    let _ = save(&c);
     c
 }
 
@@ -117,7 +244,7 @@ const BLANK_PNG: [u8; 68] = [
 
 /// The request queue and what the chat commands need, owned by the main loop.
 struct App {
-    cfg: watch::Sender<Config>,
+    cfg: Arc<watch::Sender<Config>>,
     sb: mpsc::UnboundedSender<String>,
     st: commands::State,
     start: Instant,
@@ -150,7 +277,7 @@ impl App {
 
     fn change(&self, f: impl FnOnce(&mut Config)) {
         self.cfg.send_modify(f);
-        save(&self.cfg.borrow());
+        let _ = save(&self.cfg.borrow());
     }
 
     /// One chat message: run the command, carry out what it needs. ponytail: one at a time, so a
@@ -249,6 +376,18 @@ impl App {
         let token = self.cfg.borrow().pear_token.clone();
         let current = self.st.current.clone();
         let answer = match action {
+            // Not Songify's: the window's Remove button.
+            "queue_remove" => {
+                let i = data["index"].as_u64().unwrap_or(u64::MAX) as usize;
+                if i >= self.st.queue.len() {
+                    return "No such request.".into();
+                }
+                let q = self.st.queue.remove(i);
+                match pear::remove(&token, &q.track.id).await {
+                    Ok(()) => format!("Removed {} - {} ({}).", q.track.artist, q.track.title, q.user),
+                    Err(e) => format!("Removed, but Pear still has it: {e}"),
+                }
+            }
             "queue_add" => {
                 let track = data["track"].as_str().unwrap_or("").trim();
                 let user = data["requester"].as_str().unwrap_or("").to_string();
@@ -361,6 +500,21 @@ impl App {
 
     /// Rebuild Songify's JSON and hand it to the API (pushed to /ws/data only when it changed).
     fn publish(&self) {
+        let line = |t: &commands::Track| format!("{} - {}", t.artist, t.title);
+        let now = self.st.current.as_ref().map(line).unwrap_or_default();
+        let now = match self.st.current_by.as_str() {
+            "" => now,
+            by => format!("{now} (requested by {by})"),
+        };
+        let queue: Vec<String> = (self.st.queue.iter().enumerate())
+            .map(|(i, q)| format!("#{} {} ({})", i + 1, line(&q.track), q.user))
+            .collect();
+        status(|s| {
+            if s.now != now || s.queue != queue {
+                (s.now, s.queue) = (now, queue);
+                s.queue_rev += 1;
+            }
+        });
         let Some(json) = self.payload_json() else { return };
         self.payload.send_if_modified(|p| {
             let new = **p != *json;
@@ -487,13 +641,12 @@ async fn write_cover(dir: &std::path::Path, url: &str) -> Result<(), String> {
 
 fn main() {
     // Set by the release build from the git tag; local builds say "dev".
-    say(format!(
-        "songrequestz {}",
-        option_env!("SONGREQUESTZ_VERSION").unwrap_or("dev")
-    ));
+    let version = format!("songrequestz {}", option_env!("SONGREQUESTZ_VERSION").unwrap_or("dev"));
+    say(version.clone());
     let cfg = load();
-    let port = cfg.port;
-    let cfg_tx = watch::channel(cfg).0;
+    let (port, show) = (cfg.port, !cfg.start_hidden);
+    let cfg_tx = Arc::new(watch::channel(cfg).0);
+    let app = ui::app();
     let (sb_tx, sb_rx) = mpsc::unbounded_channel();
     let (chat_tx, mut chat_rx) = mpsc::unbounded_channel();
     let (pear_tx, mut pear_rx) = mpsc::unbounded_channel();
@@ -506,17 +659,22 @@ fn main() {
         .unwrap();
     let listener = match rt.block_on(server::bind(port)) {
         Ok(l) => l,
-        Err(e) => {
-            say(e);
-            std::process::exit(1);
-        }
+        Err(e) => ui::fatal(&e),
     };
-    rt.spawn(server::run(listener, payload.subscribe(), cfg_tx.subscribe(), api_tx));
+    say(format!("config: {}", config_path().display()));
+    rt.spawn(server::run(
+        listener,
+        payload.subscribe(),
+        cfg_tx.subscribe(),
+        api_tx.clone(),
+    ));
     rt.spawn(streamerbot::run(cfg_tx.subscribe(), sb_rx, chat_tx.clone()));
     rt.spawn(tiktok::run(cfg_tx.subscribe(), chat_tx));
     rt.spawn(pear::run(cfg_tx.subscribe(), pear_tx));
-    let mut app = App {
-        cfg: cfg_tx,
+    let (ui_tx, ui_rx) = fltk::app::channel();
+    rt.spawn(tray::run(ui_tx));
+    let mut a = App {
+        cfg: cfg_tx.clone(),
         sb: sb_tx,
         st: commands::State::default(),
         start: Instant::now(),
@@ -526,7 +684,8 @@ fn main() {
         text: None,
         cover: None,
     };
-    rt.block_on(async {
+    let app_loop = async move {
+        let app = &mut a;
         loop {
             tokio::select! {
                 Some(c) = chat_rx.recv() => {
@@ -534,7 +693,10 @@ fn main() {
                 }
                 Some((action, data, answer)) = api_rx.recv() => {
                     let a = app.api(&action, &data).await;
-                    let _ = answer.send(a);
+                    // Nobody waiting (the window's buttons): the log gets it.
+                    if let Err(a) = answer.send(a) {
+                        say(a);
+                    }
                 }
                 Some(e) = pear_rx.recv() => {
                     match e {
@@ -558,5 +720,7 @@ fn main() {
                 else => break,
             }
         }
-    });
+    };
+    std::thread::spawn(move || rt.block_on(app_loop));
+    ui::run(app, &version, cfg_tx, ui_rx, api_tx, show);
 }

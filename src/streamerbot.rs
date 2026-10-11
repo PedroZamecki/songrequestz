@@ -2,7 +2,7 @@
 //! sends the requests main.rs makes (chat replies, DoAction).
 
 use crate::commands::{Reply, Who};
-use crate::{say, Chat, Config};
+use crate::{say, status, Chat, Config};
 use base64::prelude::{Engine, BASE64_STANDARD};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -36,6 +36,8 @@ pub fn chat_reply(r: &Reply, platform: &str, action: &str) -> String {
 }
 
 const SUBSCRIBE: &str = r#"{"request":"Subscribe","id":"subscribe","events":{"Twitch":["ChatMessage"]}}"#;
+/// Action names for the window's pickers; asked on every connect.
+const GET_ACTIONS: &str = r#"{"request":"GetActions","id":"actions"}"#;
 
 const NO_AUTH: &str = "streamer.bot: authentication is off, so replies can't go straight to chat. Either turn \
 it on (Streamer.bot: Servers/Clients > WebSocket Server > Enable Authentication, set a password) and put the \
@@ -57,7 +59,7 @@ fn reply(text: &str, c: &Config, chat: &mpsc::UnboundedSender<Chat>) -> Vec<Stri
             if c.reply_action.is_empty() {
                 say(NO_AUTH.into());
             }
-            return vec![SUBSCRIBE.into()];
+            return vec![SUBSCRIBE.into(), GET_ACTIONS.into()];
         };
         if c.streamerbot_password.is_empty() {
             say("streamer.bot: needs its password (streamerbot_password in songrequestz.json)".into());
@@ -65,7 +67,19 @@ fn reply(text: &str, c: &Config, chat: &mpsc::UnboundedSender<Chat>) -> Vec<Stri
         }
         let auth = auth(&c.streamerbot_password, salt, challenge);
         let auth = json!({ "request": "Authenticate", "id": "auth", "authentication": auth });
-        return vec![auth.to_string(), SUBSCRIBE.into()];
+        return vec![auth.to_string(), SUBSCRIBE.into(), GET_ACTIONS.into()];
+    }
+    if let Some(list) = v["actions"].as_array().filter(|_| v["id"] == "actions") {
+        let names: Vec<String> = list
+            .iter()
+            .filter_map(|a| a["name"].as_str().map(String::from))
+            .collect();
+        status(|s| {
+            if s.actions != names {
+                s.actions = names;
+                s.actions_rev += 1;
+            }
+        });
     }
     if v["status"] == "error" {
         let (id, e) = (v["id"].as_str().unwrap_or("?"), v["error"].as_str().unwrap_or("?"));
@@ -111,6 +125,7 @@ pub async fn run(
         let url = c.streamerbot_url.trim();
         if url.is_empty() {
             say("streamer.bot: off".into());
+            status(|s| s.sb = "off".into());
             tokio::select! {
                 _ = cfg.changed() => {}
                 // Requests while off: drop them.
@@ -121,6 +136,7 @@ pub async fn run(
         match tokio_tungstenite::connect_async(url).await {
             Ok((ws, _)) => {
                 say(format!("streamer.bot: connected ({url})"));
+                status(|s| s.sb = format!("connected ({url})"));
                 was_up = true;
                 // Requests from while it was down are stale: drop them.
                 while cmd.try_recv().is_ok() {}
@@ -148,15 +164,18 @@ pub async fn run(
                         _ = moved(&mut cfg, &c) => break,
                     }
                 }
-                say(if stuck {
-                    "streamer.bot: wrong password (streamerbot_password in songrequestz.json)".into()
+                let why = if stuck {
+                    "wrong password (Settings)"
                 } else {
-                    "streamer.bot: disconnected".into()
-                });
+                    "disconnected"
+                };
+                say(format!("streamer.bot: {why}"));
+                status(|s| s.sb = why.into());
             }
             Err(e) => {
                 if was_up {
                     say(format!("streamer.bot: can't connect to {url} ({e}), retrying every 5s"));
+                    status(|s| s.sb = format!("not running? ({url})"));
                 }
                 was_up = false;
             }

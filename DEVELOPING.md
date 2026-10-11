@@ -12,6 +12,9 @@ git config core.hooksPath .githooks
 
 ## Build and run
 
+The window (FLTK) builds from source: it needs CMake, a C++ compiler and the X11/Wayland/dbus
+development packages listed in `.github/workflows/lint.yml`.
+
 ```
 cargo build --release
 ./target/release/songrequestz

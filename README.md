@@ -14,12 +14,17 @@ Releases are automatic: merging a `feat` or `fix` pull request publishes the nex
 
 Build it yourself: install Rust from https://rustup.rs, then `cargo build --release`.
 
+It starts hidden in the tray (click the icon, or Show/Hide in its menu, for the window). The window
+has the status and connections, the request queue (play/pause, skip, remove a request), every
+command and reply, the settings and the log. **Save** (Ctrl+S) applies the settings at once, except
+the API port (restart). Settings are kept in `songrequestz.json` next to the exe. Closing the
+window hides it; Quit is in the window and the tray menu.
+
 ## Streamer.bot
 
 songrequestz reads Twitch chat from Streamer.bot (its WebSocket server, on by default at
-`ws://127.0.0.1:8080/`) and answers through it, so it never logs into Twitch. Settings are in
-`songrequestz.json` next to the exe (made on the first run, new settings added on each start; it's
-read when songrequestz starts):
+`ws://127.0.0.1:8080/`) and answers through it, so it never logs into Twitch. Settings (Settings
+tab, or `songrequestz.json`):
 
 - `streamerbot_url`: Streamer.bot's WebSocket address. Empty turns it off.
 - `streamerbot_password`: needed when Streamer.bot's WebSocket authentication is on.
@@ -58,8 +63,8 @@ action decides: TTS, a Twitch chat message, an overlay, nothing. With no action 
 
 ## Overlays and Songify's API
 
-songrequestz answers Songify's local API on `http://127.0.0.1:65530/` (`port` in
-`songrequestz.json`, read at start), so Songify overlays and tools work unchanged:
+songrequestz answers Songify's local API on `http://127.0.0.1:65530/` (port in Settings,
+applied on restart), so Songify overlays and tools work unchanged:
 
 - `GET /`: the now-playing JSON (same shape as Songify's), `/ws/data`: the same, pushed on every
   change. Songify's widgets (https://songify.rocks/widgets) need `?ws=65530` on their URL.
@@ -84,6 +89,9 @@ Install [Pear Desktop](https://github.com/pear-devs/pear-desktop) and turn on it
 plugin (default port 26538). songrequestz connects by itself, and reconnects whenever Pear starts.
 If the API Server asks for authorization, Pear shows a prompt the first time: click **Allow**; the
 token is saved in `songrequestz.json` (`pear_token`; empty it to authorize again).
+
+The window's Queue tab removes a request from Pear's queue too (also on the API:
+`{"action":"queue_remove","data":{"index":0}}`, 0 = first request; not a Songify command).
 
 Requests go into Pear's queue in request order, after the playing song and ahead of Pear's own
 autoplay. `!ssr` takes words to search, a YouTube or YouTube Music link or video id, or a Spotify
