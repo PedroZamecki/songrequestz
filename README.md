@@ -41,6 +41,21 @@ How a reply is sent, per command:
   - `%platform%`: `twitch` (or `tiktok`), and the reply's placeholders as arguments too
     (`%user%`, `%title%`, `%artist%`, `%song%`, `%pos%`, `%votes%`, ...).
 
+## TikTok
+
+songrequestz reads TikTok chat from [tikstream](https://github.com/PedroZamecki/tikstream) or
+TikFinity (their event WebSocket, `ws://127.0.0.1:21213/`), so it never logs into TikTok either.
+Nothing goes back to TikTok chat: a command's result runs its own `action`, else `tiktok_action`,
+with the same arguments as above and `%platform%` = `tiktok` (`%user%` is the sender's @name). The
+action decides: TTS, a Twitch chat message, an overlay, nothing. With no action it's only logged.
+
+- `tiktok_url`: the WebSocket address. Empty turns it off.
+- `tiktok_user`: your TikTok @name. TikTok doesn't mark the streamer's own messages, so this is how
+  yours count as the broadcaster's. Moderators, subscribers and followers come from TikTok itself;
+  a `who` of `followers` keeps out viewers who don't follow you (TikTok only: Twitch chatters all
+  count as followers, use Twitch's followers-only chat for that).
+- `tiktok_action`: the Streamer.bot action for results of commands without their own `action`.
+
 ## Overlays and Songify's API
 
 songrequestz answers Songify's local API on `http://127.0.0.1:65530/` (`port` in

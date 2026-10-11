@@ -1,8 +1,8 @@
 //! Streamer.bot client: authenticates, subscribes to Twitch chat (each message goes to main.rs) and
 //! sends the requests main.rs makes (chat replies, DoAction).
 
-use crate::commands::Reply;
-use crate::{say, Config};
+use crate::commands::{Reply, Who};
+use crate::{say, Chat, Config};
 use base64::prelude::{Engine, BASE64_STANDARD};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -10,16 +10,6 @@ use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
-
-/// A Twitch chat message, from Streamer.bot's `Twitch.ChatMessage` event.
-pub struct Chat {
-    /// Display name.
-    pub user: String,
-    /// Streamer.bot's role: 1 viewer, 2 VIP, 3 moderator, 4 broadcaster.
-    pub role: u8,
-    pub subscribed: bool,
-    pub text: String,
-}
 
 /// DoAction request. `args` is written as-is, without copying it into a new JSON tree.
 pub fn do_action(action: &str, args: &Value) -> String {
@@ -84,15 +74,20 @@ fn reply(text: &str, c: &Config, chat: &mpsc::UnboundedSender<Chat>) -> Vec<Stri
     Vec::new()
 }
 
+/// A Twitch chat message, from Streamer.bot's `Twitch.ChatMessage` event (user role: 1 viewer,
+/// 2 VIP, 3 moderator, 4 broadcaster).
 fn chat_message(v: &Value) -> Option<Chat> {
     if v["event"]["source"] != "Twitch" || v["event"]["type"] != "ChatMessage" {
         return None;
     }
     let (d, u) = (&v["data"], &v["data"]["user"]);
     Some(Chat {
+        platform: "twitch",
         user: u["name"].as_str()?.into(),
-        role: u["role"].as_u64().unwrap_or(1) as u8,
-        subscribed: u["subscribed"].as_bool().unwrap_or(false),
+        who: Who::twitch(
+            u["role"].as_u64().unwrap_or(1) as u8,
+            u["subscribed"].as_bool().unwrap_or(false),
+        ),
         text: d["text"].as_str()?.into(),
     })
 }
@@ -221,7 +216,7 @@ mod tests {
         let v = json!({"event":{"source":"Twitch","type":"ChatMessage"},"data":{"user":{"role":4,
             "subscribed":false,"login":"pedrozamecki","name":"PedroZamecki"},"text":"!ssr teste"}});
         let m = chat_message(&v).unwrap();
-        assert_eq!((m.user.as_str(), m.role, m.subscribed), ("PedroZamecki", 4, false));
+        assert_eq!((m.user.as_str(), m.who), ("PedroZamecki", Who::Broadcaster));
         assert_eq!(m.text, "!ssr teste");
         assert!(chat_message(&json!({"id":"subscribe","status":"ok"})).is_none());
     }

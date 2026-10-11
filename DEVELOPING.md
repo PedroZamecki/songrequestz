@@ -30,6 +30,16 @@ password). Type chat lines into the mock: `!song` (viewer Ana), `Bob: !ssr never
 real one, `SendMessage` needs authentication on. The real Streamer.bot (`ws://127.0.0.1:8080/`) works
 the same way.
 
+## TikTok without a live
+
+Run tikstream in dev mode and send it fake chat; songrequestz gets it like real TikTok chat:
+
+```
+TIKSTREAM_DEV=1 ../tikstream/target/release/tikstream
+uv run ../tikstream/dev/fake.py chat "!ssr never gonna"   # from Tester, a follower
+uv run ../tikstream/dev/fake.py '{"event":"chat","data":{"uniqueId":"mia","isModerator":true,"comment":"!skip"}}'
+```
+
 ## Pear Desktop
 
 Pear has a Linux build: run it with the API Server plugin on (try both with and without its
